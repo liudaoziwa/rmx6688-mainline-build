@@ -42,7 +42,9 @@ jobs:
         run: git clone --depth 1 --branch "$GITHUB_REF_NAME" "$KERNEL_REPO" kernel
 
       - name: Clone nested initramfs repository
-        run: git clone --depth 1 "$INITRAMFS_REPO" kernel/initramfs
+        run: |
+            git clone --depth 1 "$INITRAMFS_REPO" kernel/initramfs
+            chmod -R 755 kernel
 
       - name: Build with build.sh (JOBS=$(nproc), clang/LLVM)
         working-directory: kernel
