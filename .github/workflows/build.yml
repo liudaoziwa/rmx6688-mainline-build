@@ -1,0 +1,56 @@
+name: build-kernel
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN: clang
+  KERNEL_REPO: https://github.com/liudaoziwa/mainline-mt6991.git
+  INITRAMFS_REPO: https://github.com/liudaoziwa/rmx6688-initramfs-and-firmware.git
+
+jobs:
+  build:
+    name: build Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Install toolchain and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex \
+            clang lld llvm \
+            libssl-dev libelf-dev \
+            cpio kmod rsync zstd xz-utils lz4 \
+            python3 perl ca-certificates
+          clang --version
+          ld.lld --version
+          llvm-strip --version
+          make --version | head -1
+
+      - name: Clone kernel source
+        run: git clone --depth 1 --branch "$GITHUB_REF_NAME" "$KERNEL_REPO" kernel
+
+      - name: Clone nested initramfs repository
+        run: git clone --depth 1 "$INITRAMFS_REPO" kernel/initramfs
+
+      - name: Build with build.sh (JOBS=$(nproc), clang/LLVM)
+        working-directory: kernel
+        run: JOBS="$(nproc)" TOOLCHAIN=clang ./build.sh
+
+      - name: Upload Image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image-${{ github.sha }}
+          path: kernel/out/arch/arm64/boot/Image
+          if-no-files-found: error
