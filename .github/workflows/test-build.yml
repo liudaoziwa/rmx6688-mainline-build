@@ -533,7 +533,7 @@ jobs:
               || { echo "::error::桌面用户 ${DESKTOP_USER} 不存在"; exit 1; }
             test -d "rootfs/home/${DESKTOP_USER}" \
               || { echo "::error::桌面用户 ${DESKTOP_USER} 的 home 不存在"; exit 1; }
-            grep -q '^%wheel ALL=(ALL:ALL) ALL$' rootfs/etc/sudoers.d/10-wheel \
+            sudo grep -q '^%wheel ALL=(ALL:ALL) ALL$' rootfs/etc/sudoers.d/10-wheel \
               || { echo "::error::wheel sudo 配置缺失"; exit 1; }
             echo "KDE desktop user: $DESKTOP_USER"
           else
