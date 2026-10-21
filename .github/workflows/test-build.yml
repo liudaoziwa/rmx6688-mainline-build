@@ -1,0 +1,685 @@
+name: build-kernel-and-rootfs
+
+# =============================================================================
+# 内核 + Arch Linux ARM64 rootfs 构建。
+#
+# 本文件的 rootfs job 只做 rootfs：
+#   - 在 GitHub 原生 arm64 Ubuntu runner（ubuntu-24.04-arm）上构建，
+#     Arch Linux ARM aarch64 直接 chroot，不需要 qemu-user-static/binfmt；
+#   - 不编译/不安装内核模块，也不跑 depmod；
+#   - rootfs 的 /boot 也清空，内核/initramfs 由外部 boot 分区提供；
+#   - 把 rmx6688-initramfs-and-firmware 里的定制 firmware 放进 rootfs
+#     （同时安装发行版的 linux-firmware-mediatek 作为补充）；
+#   - 默认安装 KDE Plasma（plasma-meta + Plasma Login Manager），
+#     可用 INSTALL_KDE=false 回到 headless；
+#   - 目前只做 Arch Linux ARM aarch64，后续可照这个 job 加别的发行版。
+#
+# rootfs 的关键约定（来自 init-rootfs.c）：
+#   - initramfs 按 ext4 label "rootfs" 查找根分区，所以镜像必须 -L rootfs；
+#   - /etc/fstab 用 LABEL=rootfs，避免分区号/命名变化；
+#   - 镜像刷到 GPT 名为 rootfs 的分区（或任意 ext4 分区）即可。
+# =============================================================================
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      TASK:
+        description: "构建任务"
+        required: true
+        default: "仅RootFS"
+        type: choice
+        options:
+          - "仅RootFS"
+          - "仅内核"
+          - "全部"
+      ROOTFS_SIZE:
+        description: "rootfs 镜像大小（KDE 建议至少 8G）"
+        required: true
+        default: "8G"
+        type: string
+      ROOTFS_HOSTNAME:
+        description: "rootfs 主机名"
+        required: true
+        default: "rmx6688"
+        type: string
+      ROOT_PASSWORD:
+        description: "root 密码"
+        required: true
+        default: "1234"
+        type: string
+      INSTALL_KDE:
+        description: "安装 KDE Plasma 桌面（默认开启）"
+        required: false
+        default: true
+        type: boolean
+      KDE_PACKAGES:
+        description: "KDE 桌面包（空格分隔；仅在 INSTALL_KDE=true 时安装）"
+        required: false
+        default: "plasma-meta mesa konsole dolphin kate pipewire pipewire-pulse wireplumber noto-fonts-cjk ttf-dejavu alsa-ucm-conf"
+        type: string
+      DESKTOP_USER:
+        description: "KDE 桌面用户名"
+        required: false
+        default: "arch"
+        type: string
+      DESKTOP_PASSWORD:
+        description: "KDE 桌面用户密码（留空则与 root 相同）"
+        required: false
+        default: ""
+        type: string
+      EXTRA_PACKAGES:
+        description: "额外安装的 Arch 包（空格分隔）"
+        required: false
+        default: "networkmanager wpa_supplicant iwd openssh sudo vim less curl wget ca-certificates htop bluez bluez-utils iw tzdata"
+        type: string
+      FIRMWARE_PACKAGES:
+        description: "发行版固件包（空格分隔；仓库内定制固件会覆盖同名文件）"
+        required: false
+        default: "linux-firmware-mediatek wireless-regdb"
+        type: string
+      UPLOAD_RAW_IMG:
+        description: "同时上传未压缩的 rootfs.img（体积大）"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN: clang
+  KERNEL_REPO: https://github.com/liudaoziwa/mainline-mt6991.git
+  INITRAMFS_REPO: https://github.com/liudaoziwa/rmx6688-initramfs-and-firmware.git
+  FIRMWARE_REPO: https://github.com/liudaoziwa/rmx6688-initramfs-and-firmware.git
+  ALARM_TARBALL: https://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz
+
+jobs:
+  # ==========================================================
+  # Job 1：内核（保持原逻辑）
+  # 手动触发时由 TASK 控制；push 时仍然构建。
+  # ==========================================================
+  build:
+    name: build Image
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.TASK == '全部' || github.event.inputs.TASK == '仅内核')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Install toolchain and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex \
+            clang lld llvm \
+            libssl-dev libelf-dev \
+            cpio kmod rsync zstd xz-utils lz4 \
+            python3 perl ca-certificates
+          clang --version
+          ld.lld --version
+          llvm-strip --version
+          make --version | head -1
+
+      - name: Clone kernel source
+        run: git clone --depth 1 --branch "$GITHUB_REF_NAME" "$KERNEL_REPO" kernel
+
+      - name: Clone nested initramfs repository
+        run: git clone --depth 1 "$INITRAMFS_REPO" kernel/initramfs
+
+      - name: Build with build.sh (JOBS=$(nproc), clang/LLVM)
+        working-directory: kernel
+        run: JOBS="$(nproc)" TOOLCHAIN=clang ./build.sh
+
+      - name: Upload Image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image-${{ github.sha }}
+          path: kernel/out/arch/arm64/boot/Image
+          if-no-files-found: error
+
+  # ==========================================================
+  # Job 2：Arch Linux ARM64 rootfs
+  # 独立于内核 job，不依赖内核模块；firmware 直接写进 rootfs。
+  # ==========================================================
+  rootfs:
+    name: build Arch Linux ARM64 rootfs
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.TASK == '全部' || github.event.inputs.TASK == '仅RootFS')) }}
+    # rootfs 用原生 arm64 runner，避免 x86_64 + qemu 的慢速模拟。
+    runs-on: ubuntu-24.04-arm
+    # KDE 安装和 8G 镜像写入比 headless 慢，留足时间。
+    timeout-minutes: 180
+
+    env:
+      ROOTFS_SIZE: ${{ github.event.inputs.ROOTFS_SIZE || '8G' }}
+      ROOTFS_HOSTNAME: ${{ github.event.inputs.ROOTFS_HOSTNAME || 'rmx6688' }}
+      ROOT_PASSWORD: ${{ github.event.inputs.ROOT_PASSWORD || '1234' }}
+      INSTALL_KDE: ${{ github.event.inputs.INSTALL_KDE || 'true' }}
+      KDE_PACKAGES: ${{ github.event.inputs.KDE_PACKAGES || 'plasma-meta mesa konsole dolphin kate pipewire pipewire-pulse wireplumber noto-fonts-cjk ttf-dejavu alsa-ucm-conf' }}
+      DESKTOP_USER: ${{ github.event.inputs.DESKTOP_USER || 'arch' }}
+      DESKTOP_PASSWORD: ${{ github.event.inputs.DESKTOP_PASSWORD || '' }}
+      EXTRA_PACKAGES: ${{ github.event.inputs.EXTRA_PACKAGES || 'networkmanager wpa_supplicant iwd openssh sudo vim less curl wget ca-certificates htop bluez bluez-utils iw tzdata' }}
+      FIRMWARE_PACKAGES: ${{ github.event.inputs.FIRMWARE_PACKAGES || 'linux-firmware-mediatek wireless-regdb' }}
+      # init-rootfs.c 用 ext4 label "rootfs" 作为 UUID 失配后的兜底，不要随便改。
+      ROOTFS_LABEL: rootfs
+
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          # 这个 job 固定用原生 arm64 runner；若 runner 被改回 x86_64，尽早报错。
+          if [ "$(uname -m)" != "aarch64" ]; then
+            echo "::error::rootfs job 必须在原生 aarch64 runner 上运行，当前架构：$(uname -m)"
+            exit 1
+          fi
+          if ! [[ "$ROOTFS_SIZE" =~ ^[0-9]+[GgMm]$ ]]; then
+            echo "::error::ROOTFS_SIZE 必须是类似 8G / 8192M 的值，当前：$ROOTFS_SIZE"
+            exit 1
+          fi
+          if ! [[ "$ROOTFS_HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
+            echo "::error::ROOTFS_HOSTNAME 不是合法主机名：$ROOTFS_HOSTNAME"
+            exit 1
+          fi
+          test -n "$ROOT_PASSWORD" || { echo "::error::ROOT_PASSWORD 不能为空"; exit 1; }
+          case "$ROOT_PASSWORD" in
+            *:*) echo "::error::ROOT_PASSWORD 不能包含冒号"; exit 1 ;;
+          esac
+          case "$INSTALL_KDE" in
+            true|false) ;;
+            *) echo "::error::INSTALL_KDE 只能是 true 或 false，当前：$INSTALL_KDE"; exit 1 ;;
+          esac
+          if [ "$INSTALL_KDE" = "true" ]; then
+            test -n "$KDE_PACKAGES" || { echo "::error::INSTALL_KDE=true 时 KDE_PACKAGES 不能为空"; exit 1; }
+            if ! [[ "$DESKTOP_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+              echo "::error::DESKTOP_USER 不是合法用户名：$DESKTOP_USER"
+              exit 1
+            fi
+            if [ "$DESKTOP_USER" = "root" ]; then
+              echo "::error::DESKTOP_USER 不能是 root（KDE 不允许 root 图形会话）"
+              exit 1
+            fi
+            case "$DESKTOP_PASSWORD" in
+              *:*) echo "::error::DESKTOP_PASSWORD 不能包含冒号"; exit 1 ;;
+            esac
+          fi
+          echo "rootfs: size=$ROOTFS_SIZE hostname=$ROOTFS_HOSTNAME label=$ROOTFS_LABEL"
+          echo "desktop: install_kde=$INSTALL_KDE user=$DESKTOP_USER"
+          echo "extra packages: $EXTRA_PACKAGES"
+          echo "KDE packages: $KDE_PACKAGES"
+          echo "firmware packages: $FIRMWARE_PACKAGES"
+
+      - name: Free runner disk for KDE rootfs
+        run: |
+          set -euo pipefail
+          # GitHub runner 预装的 Android SDK / .NET / GHC 等与本构建无关；
+          # KDE + 8G 镜像需要更多可用空间。
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost
+          sudo apt-get clean
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            wget curl git ca-certificates \
+            e2fsprogs util-linux rsync \
+            libarchive-tools android-sdk-libsparse-utils
+          bsdtar --version
+          img2simg 2>&1 | head -1 || true
+
+      - name: Download and extract Arch Linux ARM aarch64
+        run: |
+          set -euo pipefail
+          wget -q --show-progress -O ArchLinuxARM-aarch64.tar.gz "$ALARM_TARBALL"
+          mkdir -p rootfs
+          # bsdtar 显式保留 ACL / xattr（file capabilities）；普通 tar 会丢。
+          sudo bsdtar --acls --xattrs -xpf ArchLinuxARM-aarch64.tar.gz -C rootfs
+          test -x rootfs/bin/bash
+          rm -f ArchLinuxARM-aarch64.tar.gz
+          ls -ld rootfs rootfs/usr rootfs/etc
+
+      - name: Write rootfs setup script
+        run: |
+          set -euo pipefail
+          sudo mkdir -p rootfs/root
+          sudo tee rootfs/root/setup-rootfs.sh > /dev/null <<'EOS'
+          #!/bin/bash
+          set -euo pipefail
+
+          # Arch Linux ARM 的 keyring 可能比 tarball 旧，先更新 keyring。
+          pacman-key --init
+          pacman-key --populate archlinuxarm
+          pacman -Sy --noconfirm --disable-download-timeout archlinuxarm-keyring || true
+          pacman -Sy --noconfirm --disable-download-timeout archlinux-keyring || true
+
+          # 不用发行版内核：rootfs 由主线内核启动，且这里不安装内核模块。
+          pacman -Rdd --noconfirm linux-aarch64 || true
+
+          pacman -Syu --noconfirm --disable-download-timeout
+
+          if [ -n "${ROOTFS_PACKAGES:-}" ]; then
+            read -r -a pkgs <<< "$ROOTFS_PACKAGES"
+            pacman -S --noconfirm --needed --disable-download-timeout "${pkgs[@]}"
+          fi
+
+          # 默认安装 KDE Plasma；plasma-meta 当前会拉入 Plasma Login Manager。
+          if [ "${ROOTFS_INSTALL_KDE:-true}" = "true" ]; then
+            read -r -a kde_pkgs <<< "$ROOTFS_KDE_PACKAGES"
+            pacman -S --noconfirm --needed --disable-download-timeout "${kde_pkgs[@]}"
+            # KWin/Wayland 需要 Mesa；即使 KDE_PACKAGES 被精简也显式保证安装。
+            pacman -S --noconfirm --needed --disable-download-timeout mesa
+          fi
+
+          # 固件包缺失不应该让整个 rootfs 构建失败；仓库内定制固件稍后覆盖。
+          if [ -n "${ROOTFS_FIRMWARE:-}" ]; then
+            read -r -a fw_pkgs <<< "$ROOTFS_FIRMWARE"
+            for pkg in "${fw_pkgs[@]}"; do
+              pacman -S --noconfirm --needed --disable-download-timeout "$pkg" \
+                || echo "WARNING: firmware package $pkg unavailable"
+            done
+          fi
+
+          printf '%s\n' "$ROOTFS_HOSTNAME" > /etc/hostname
+          cat > /etc/hosts <<HOSTS_EOF
+          127.0.0.1       localhost
+          127.0.1.1       $ROOTFS_HOSTNAME
+          ::1             localhost ip6-localhost ip6-loopback
+          HOSTS_EOF
+
+          # init-rootfs.c 用 label "rootfs" 找根文件系统，fstab 也按 label 写。
+          cat > /etc/fstab <<'FSTAB_EOF'
+          # <device> <mount> <type> <options> <dump> <pass>
+          LABEL=rootfs  /  ext4  defaults,noatime,errors=remount-ro  0  1
+          FSTAB_EOF
+
+          sed -i 's/^#\s*en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+          grep -q '^en_US.UTF-8 UTF-8' /etc/locale.gen || echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen
+          locale-gen
+          echo 'LANG=en_US.UTF-8' > /etc/locale.conf
+          if [ -e /usr/share/zoneinfo/Asia/Shanghai ]; then
+            ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+          else
+            echo "WARNING: tzdata 缺失，/etc/localtime 保持原样"
+          fi
+
+          printf 'root:%s\n' "$ROOTFS_PASSWORD" | chpasswd
+
+          if [ "${ROOTFS_INSTALL_KDE:-true}" = "true" ]; then
+            # KDE 不允许 root 图形会话，创建一个普通桌面用户。
+            if ! id "$ROOTFS_DESKTOP_USER" >/dev/null 2>&1; then
+              useradd -m -s /bin/bash "$ROOTFS_DESKTOP_USER"
+            fi
+            for grp in wheel audio video input render bluetooth lp optical storage; do
+              if getent group "$grp" >/dev/null; then
+                usermod -aG "$grp" "$ROOTFS_DESKTOP_USER"
+              fi
+            done
+            printf '%s:%s\n' "$ROOTFS_DESKTOP_USER" \
+              "${ROOTFS_DESKTOP_PASSWORD:-$ROOTFS_PASSWORD}" | chpasswd
+            install -d -m 750 /etc/sudoers.d
+            printf '%%wheel ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/10-wheel
+            chmod 440 /etc/sudoers.d/10-wheel
+          fi
+
+          if pacman -Q openssh >/dev/null 2>&1; then
+            sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+            sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+            ssh-keygen -A
+            # 有 sshdgenkeys.service 时删掉构建期生成的 host key，首次开机重新生成；
+            # 没有该服务则保留，避免 sshd 起不来。
+            if [ -e /usr/lib/systemd/system/sshdgenkeys.service ]; then
+              rm -f /etc/ssh/ssh_host_*
+            fi
+          fi
+
+          # NetworkManager 走 systemd-resolved 管 DNS。
+          mkdir -p /etc/NetworkManager/conf.d
+          printf '[main]\ndns=systemd-resolved\n' > /etc/NetworkManager/conf.d/dns.conf
+
+          for svc in sshd NetworkManager systemd-resolved systemd-timesyncd bluetooth; do
+            systemctl enable "$svc" 2>/dev/null || echo "WARNING: cannot enable $svc"
+          done
+          systemctl enable serial-getty@ttyS0.service 2>/dev/null || true
+
+          if [ "${ROOTFS_INSTALL_KDE:-true}" = "true" ]; then
+            # Plasma Login Manager 与 getty@tty1 冲突，KDE 下不启用文本 getty。
+            systemctl disable getty@tty1.service 2>/dev/null || true
+            if [ -e /usr/lib/systemd/system/plasmalogin.service ]; then
+              systemctl enable plasmalogin.service
+            elif [ -e /usr/lib/systemd/system/sddm.service ]; then
+              systemctl enable sddm.service
+            else
+              echo "::error::KDE 已安装但找不到 Plasma Login Manager / SDDM"
+              exit 1
+            fi
+            systemctl set-default graphical.target \
+              || ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target
+          else
+            systemctl enable getty@tty1.service 2>/dev/null || true
+            systemctl set-default multi-user.target \
+              || ln -sf /usr/lib/systemd/system/multi-user.target /etc/systemd/system/default.target
+          fi
+
+          ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+
+          # 让每台设备首次开机生成唯一 machine-id / SSH host key。
+          : > /etc/machine-id
+          rm -f /var/lib/systemd/random-seed
+
+          pacman -Scc --noconfirm || true
+          rm -rf /var/cache/pacman/pkg/*
+          rm -rf /var/log/journal/*
+          EOS
+          sudo chmod +x rootfs/root/setup-rootfs.sh
+
+      - name: Configure rootfs in native aarch64 chroot
+        run: |
+          set -euo pipefail
+          # runner 本身是 aarch64，chroot 可直接执行 Arch Linux ARM 的二进制。
+          sudo rm -f rootfs/etc/resolv.conf
+          sudo cp /etc/resolv.conf rootfs/etc/resolv.conf
+          # 宿主机若用 systemd-resolved stub，chroot 里没有该服务，换公共 DNS。
+          if grep -q '^nameserver 127\.0\.0\.53' rootfs/etc/resolv.conf; then
+            echo "chroot 内无 systemd-resolved，改用公共 DNS"
+            printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' | sudo tee rootfs/etc/resolv.conf > /dev/null
+          fi
+          sudo mkdir -p rootfs/proc rootfs/sys rootfs/dev/pts
+
+          cleanup() {
+            sudo umount -lf rootfs/dev/pts 2>/dev/null || true
+            sudo umount -lf rootfs/dev     2>/dev/null || true
+            sudo umount -lf rootfs/proc    2>/dev/null || true
+            sudo umount -lf rootfs/sys     2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          sudo mount -t proc  proc  rootfs/proc
+          sudo mount -t sysfs sysfs rootfs/sys
+          sudo mount --bind /dev rootfs/dev
+          sudo mount --bind /dev/pts rootfs/dev/pts
+
+          sudo chroot rootfs /usr/bin/env -i \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/root \
+            LANG=C \
+            ROOTFS_HOSTNAME="$ROOTFS_HOSTNAME" \
+            ROOTFS_PASSWORD="$ROOT_PASSWORD" \
+            ROOTFS_INSTALL_KDE="$INSTALL_KDE" \
+            ROOTFS_KDE_PACKAGES="$KDE_PACKAGES" \
+            ROOTFS_DESKTOP_USER="$DESKTOP_USER" \
+            ROOTFS_DESKTOP_PASSWORD="${DESKTOP_PASSWORD:-$ROOT_PASSWORD}" \
+            ROOTFS_PACKAGES="$EXTRA_PACKAGES" \
+            ROOTFS_FIRMWARE="$FIRMWARE_PACKAGES" \
+            /bin/bash /root/setup-rootfs.sh
+
+          cleanup
+          trap - EXIT
+
+      - name: Install device firmware into rootfs
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$FIRMWARE_REPO" firmware-src
+          test -d firmware-src/firmware
+
+          sudo mkdir -p rootfs/lib/firmware/mediatek/mt6991
+          # 按 initramfs 的目录布局整体复制：
+          #   /lib/firmware/{BT,WIFI}*, /lib/firmware/arm/mali/...,
+          #   /lib/firmware/tp/24618/..., tfa98xx.cnt, md1drdi.bin
+          sudo cp -a firmware-src/firmware/. rootfs/lib/firmware/
+
+          # 内核/驱动同时会找 MediaTek 前缀路径，和 build.sh 的 cpio_list 保持一致。
+          for f in \
+            BT_RAM_CODE_MT6653_2g2a_1_hdr.bin \
+            WIFI_RAM_CODE_MT6653_2g2a_1.bin \
+            WIFI_MT6653_PATCH_MCU_2g2a_1_hdr.bin \
+            WIFI_MT6653_PHY_RAM_CODE_2g2a_1.bin; do
+            sudo install -Dm644 "firmware-src/firmware/$f" "rootfs/lib/firmware/mediatek/$f"
+          done
+          sudo install -Dm644 firmware-src/firmware/WIFI rootfs/lib/firmware/mediatek/WIFI
+          sudo install -Dm644 firmware-src/firmware/WIFI rootfs/lib/firmware/mediatek/mt6991/WIFI
+          # git clone 出来的文件属于 runner 用户，统一改回 root。
+          sudo chown -R root:root rootfs/lib/firmware
+
+          for f in \
+            lib/firmware/BT_RAM_CODE_MT6653_2g2a_1_hdr.bin \
+            lib/firmware/BT_RAM_CODE_MT6653_1_1_hdr.bin \
+            lib/firmware/BT_FW.cfg \
+            lib/firmware/mediatek/BT_RAM_CODE_MT6653_2g2a_1_hdr.bin \
+            lib/firmware/WIFI \
+            lib/firmware/WIFI_RAM_CODE_MT6653_2g2a_1.bin \
+            lib/firmware/WIFI_MT6653_PATCH_MCU_2g2a_1_hdr.bin \
+            lib/firmware/WIFI_MT6653_PHY_RAM_CODE_2g2a_1.bin \
+            lib/firmware/conninfra.cfg \
+            lib/firmware/connfem.cfg \
+            lib/firmware/mediatek/WIFI \
+            lib/firmware/mediatek/WIFI_RAM_CODE_MT6653_2g2a_1.bin \
+            lib/firmware/mediatek/WIFI_MT6653_PATCH_MCU_2g2a_1_hdr.bin \
+            lib/firmware/mediatek/WIFI_MT6653_PHY_RAM_CODE_2g2a_1.bin \
+            lib/firmware/mediatek/mt6991/WIFI \
+            lib/firmware/tfa98xx.cnt \
+            lib/firmware/md1drdi.bin \
+            lib/firmware/arm/mali/arch13.8/mali_csffw.bin \
+            lib/firmware/tp/24618/FW_S3910_TIANMA_HBP.img; do
+            test -f "rootfs/$f" || { echo "::error::定制固件缺失：$f"; exit 1; }
+          done
+          du -sh rootfs/lib/firmware
+          rm -rf firmware-src
+
+      - name: Clean chroot artifacts and remove all kernel modules
+        run: |
+          set -euo pipefail
+          sudo umount -lf rootfs/dev/pts 2>/dev/null || true
+          sudo umount -lf rootfs/dev     2>/dev/null || true
+          sudo umount -lf rootfs/proc    2>/dev/null || true
+          sudo umount -lf rootfs/sys     2>/dev/null || true
+
+          # 防止后面 rsync/mkfs 把宿主机 /proc /sys /dev 抄进镜像。
+          for d in proc sys dev dev/pts; do
+            if mountpoint -q "rootfs/$d"; then
+              echo "::error::rootfs/$d 仍然挂载着，不能打进镜像"
+              exit 1
+            fi
+          done
+
+          sudo rm -f rootfs/root/setup-rootfs.sh
+
+          # 本工作流明确不安装内核模块；清空 /lib/modules（以及 usrmerge 下的
+          # /usr/lib/modules），保留空目录。
+          for d in rootfs/lib/modules rootfs/usr/lib/modules; do
+            sudo mkdir -p "$d"
+            sudo find "$d" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          done
+
+          # rootfs 的 /boot 由外部 boot 分区提供，清掉发行版可能残留的
+          # kernel/initramfs（initramfs 里也会打包模块）。
+          sudo mkdir -p rootfs/boot
+          sudo find rootfs/boot -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+          # 确认没有把发行版内核带进来。
+          if ls -d rootfs/var/lib/pacman/local/linux-aarch64-* >/dev/null 2>&1; then
+            echo "::error::rootfs 里仍然安装了 linux-aarch64，请检查 pacman -Rdd 步骤"
+            exit 1
+          fi
+          if [ -n "$(find rootfs/boot -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+            echo "::error::rootfs/boot 不是空的，仍有 kernel/initramfs 残留"
+            exit 1
+          fi
+
+      - name: Verify rootfs
+        run: |
+          set -euo pipefail
+          if [ ! -e rootfs/sbin/init ] && [ -e rootfs/usr/lib/systemd/systemd ]; then
+            echo "WARNING: /sbin/init 缺失，补一个到 systemd 的软链接"
+            sudo mkdir -p rootfs/sbin
+            sudo ln -sf /usr/lib/systemd/systemd rootfs/sbin/init
+          fi
+          test -e rootfs/sbin/init || { echo "::error::rootfs 里没有 /sbin/init"; exit 1; }
+          test -e rootfs/usr/lib/systemd/systemd
+          test -f rootfs/etc/fstab
+          grep -q '^LABEL=rootfs' rootfs/etc/fstab
+          test -f rootfs/etc/hostname
+          test -f rootfs/etc/hosts
+          test -d rootfs/lib/firmware/mediatek
+          test -f rootfs/lib/firmware/mediatek/mt6991/WIFI
+          for d in rootfs/lib/modules rootfs/usr/lib/modules; do
+            if [ -d "$d" ] && [ -n "$(find "$d" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+              echo "::error::$d 不是空的，本工作流不应安装内核模块"
+              exit 1
+            fi
+          done
+
+          test -e rootfs/etc/systemd/system/multi-user.target.wants/sshd.service \
+            || echo "WARNING: sshd 未设置开机自启"
+          test -e rootfs/etc/systemd/system/multi-user.target.wants/NetworkManager.service \
+            || echo "WARNING: NetworkManager 未设置开机自启"
+
+          if [ "$INSTALL_KDE" = "true" ]; then
+            test -x rootfs/usr/bin/plasmalogin \
+              || { echo "::error::KDE 已启用但缺少 plasmalogin"; exit 1; }
+            test -x rootfs/usr/bin/startplasma-wayland \
+              || { echo "::error::KDE 已启用但缺少 startplasma-wayland"; exit 1; }
+            test -f rootfs/usr/share/wayland-sessions/plasma.desktop \
+              || { echo "::error::缺少 Plasma Wayland 会话文件"; exit 1; }
+            compgen -G "rootfs/var/lib/pacman/local/mesa-*" >/dev/null \
+              || { echo "::error::KDE 已启用但未安装 mesa"; exit 1; }
+            test -e rootfs/etc/systemd/system/display-manager.service \
+              || { echo "::error::display-manager.service 未启用"; exit 1; }
+            readlink rootfs/etc/systemd/system/default.target | grep -q 'graphical.target' \
+              || { echo "::error::默认 systemd target 不是 graphical.target"; exit 1; }
+            grep -q "^${DESKTOP_USER}:" rootfs/etc/passwd \
+              || { echo "::error::桌面用户 ${DESKTOP_USER} 不存在"; exit 1; }
+            test -d "rootfs/home/${DESKTOP_USER}" \
+              || { echo "::error::桌面用户 ${DESKTOP_USER} 的 home 不存在"; exit 1; }
+            grep -q '^%wheel ALL=(ALL:ALL) ALL$' rootfs/etc/sudoers.d/10-wheel \
+              || { echo "::error::wheel sudo 配置缺失"; exit 1; }
+            echo "KDE desktop user: $DESKTOP_USER"
+          else
+            echo "KDE disabled: checking headless target"
+            readlink rootfs/etc/systemd/system/default.target | grep -q 'multi-user.target' \
+              || { echo "::error::headless rootfs 的默认 target 不是 multi-user.target"; exit 1; }
+          fi
+
+          echo "--- /sbin/init ---"
+          ls -l rootfs/sbin/init
+          echo "--- firmware ---"
+          ls -l rootfs/lib/firmware/mediatek
+          echo "--- modules ---"
+          ls -la rootfs/lib/modules
+
+      - name: Create ext4 image (loop mount with mkfs -d fallback)
+        run: |
+          set -euo pipefail
+          MNT=/mnt/rootfs-img
+          cleanup() {
+            sudo umount -lf "$MNT" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          truncate -s "${ROOTFS_SIZE^^}" rootfs.img
+          sudo mkfs.ext4 -F -L "$ROOTFS_LABEL" rootfs.img
+
+          sudo mkdir -p "$MNT"
+          used_loop=0
+          if sudo mount -o loop rootfs.img "$MNT"; then
+            # rsync 保留 xattr / capabilities / ACL / 设备节点；
+            # mkfs.ext4 -d 在部分 e2fsprogs 上会丢 capabilities。
+            if sudo rsync -aHAX --numeric-ids rootfs/ "$MNT/"; then
+              sync
+              sudo umount "$MNT"
+              used_loop=1
+            else
+              echo "::warning::rsync 到 loop 镜像失败，回退到 mkfs.ext4 -d"
+              sudo umount -lf "$MNT" 2>/dev/null || true
+            fi
+          fi
+          if [ "$used_loop" -ne 1 ]; then
+            if mountpoint -q "$MNT"; then
+              echo "::error::$MNT 仍然挂载，拒绝在已挂载的镜像上重新 mkfs"
+              exit 1
+            fi
+            echo "loop mount 不可用或 rsync 失败，回退到 mkfs.ext4 -d"
+            sudo mkfs.ext4 -F -L "$ROOTFS_LABEL" -d rootfs rootfs.img
+          fi
+          cleanup
+          trap - EXIT
+          sudo rmdir "$MNT" 2>/dev/null || true
+
+          set +e
+          sudo e2fsck -fy rootfs.img
+          e2fsck_rc=$?
+          set -e
+          # 0=无错误，1/2=已修复（2 只是建议重启）；>=4 表示仍有未修复错误。
+          if [ "$e2fsck_rc" -ge 4 ]; then
+            echo "::error::e2fsck 返回 $e2fsck_rc，文件系统存在未修复错误"
+            exit 1
+          fi
+          sudo tune2fs -L "$ROOTFS_LABEL" rootfs.img
+          sudo dumpe2fs -h rootfs.img | grep -E \
+            'Filesystem volume name|Filesystem UUID|Block count|Block size'
+
+          # 内容已经写进 rootfs.img，删除源目录释放 runner 磁盘。
+          sudo rm -rf rootfs
+
+          img2simg rootfs.img archlinux-rootfs-sparse.img
+          sha256sum archlinux-rootfs-sparse.img | tee archlinux-rootfs-sparse.img.sha256
+          ls -lh rootfs.img archlinux-rootfs-sparse.img
+          du -h rootfs.img archlinux-rootfs-sparse.img
+
+      - name: Upload Arch Linux ARM64 rootfs (sparse)
+        uses: actions/upload-artifact@v4
+        with:
+          name: archlinux-rootfs
+          path: |
+            archlinux-rootfs-sparse.img
+            archlinux-rootfs-sparse.img.sha256
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload raw rootfs.img
+        if: ${{ github.event.inputs.UPLOAD_RAW_IMG == 'true' || github.event.inputs.UPLOAD_RAW_IMG == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: archlinux-rootfs-raw
+          path: rootfs.img
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Write job summary
+        run: |
+          if [ "$INSTALL_KDE" = "true" ]; then
+            desktop_desc="KDE Plasma + Plasma Login Manager + Mesa"
+            desktop_account="$DESKTOP_USER"
+          else
+            desktop_desc="未安装（headless）"
+            desktop_account="—"
+          fi
+          {
+            echo "## Arch Linux ARM64 rootfs"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|------|----|"
+            echo "| 构建环境 | GitHub 原生 arm64（\`ubuntu-24.04-arm\`） |"
+            echo "| 发行版 | Arch Linux ARM aarch64 |"
+            echo "| 桌面环境 | $desktop_desc |"
+            echo "| 桌面用户 | \`$desktop_account\` |"
+            echo "| 镜像大小 | \`$ROOTFS_SIZE\` |"
+            echo "| ext4 label | \`$ROOTFS_LABEL\` |"
+            echo "| 主机名 | \`$ROOTFS_HOSTNAME\` |"
+            echo "| 固件 | rmx6688 定制固件 + \`$FIRMWARE_PACKAGES\` |"
+            echo "| 内核模块 | 未安装（按设计） |"
+            echo ""
+            echo '```'
+            ls -lh rootfs.img archlinux-rootfs-sparse.img
+            echo '```'
+            echo ""
+            echo "刷写：把 \`archlinux-rootfs-sparse.img\` 刷到 GPT 名为 \`rootfs\` 的分区，"
+            echo "或 \`fastboot flash <rootfs 分区> archlinux-rootfs-sparse.img\`。"
+          } >> "$GITHUB_STEP_SUMMARY"
