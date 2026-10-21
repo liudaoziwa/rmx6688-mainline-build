@@ -96,7 +96,9 @@ env:
   KERNEL_REPO: https://github.com/liudaoziwa/mainline-mt6991.git
   INITRAMFS_REPO: https://github.com/liudaoziwa/rmx6688-initramfs-and-firmware.git
   FIRMWARE_REPO: https://github.com/liudaoziwa/rmx6688-initramfs-and-firmware.git
-  ALARM_TARBALL: https://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz
+  # os.archlinuxarm.org 的 HTTPS 证书当前与域名不匹配，改用可信 HTTPS 镜像。
+  ALARM_TARBALL: https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm/os/ArchLinuxARM-aarch64-latest.tar.gz
+  ALARM_TARBALL_FALLBACK: https://mirrors.ustc.edu.cn/archlinuxarm/os/ArchLinuxARM-aarch64-latest.tar.gz
 
 jobs:
   # ==========================================================
@@ -129,6 +131,10 @@ jobs:
 
       - name: Clone nested initramfs repository
         run: git clone --depth 1 "$INITRAMFS_REPO" kernel/initramfs
+
+      - name: Fix executable permissions for kernel and initramfs
+        # git clone 后部分脚本没有可执行位，统一修正。
+        run: chmod -R 755 kernel
 
       - name: Build with build.sh (JOBS=$(nproc), clang/LLVM)
         working-directory: kernel
@@ -238,7 +244,8 @@ jobs:
       - name: Download and extract Arch Linux ARM aarch64
         run: |
           set -euo pipefail
-          wget -q --show-progress -O ArchLinuxARM-aarch64.tar.gz "$ALARM_TARBALL"
+          wget -q --show-progress --tries=3 --timeout=60 -O ArchLinuxARM-aarch64.tar.gz "$ALARM_TARBALL" \
+            || wget -q --show-progress --tries=3 --timeout=60 -O ArchLinuxARM-aarch64.tar.gz "$ALARM_TARBALL_FALLBACK"
           mkdir -p rootfs
           # bsdtar 显式保留 ACL / xattr（file capabilities）；普通 tar 会丢。
           sudo bsdtar --acls --xattrs -xpf ArchLinuxARM-aarch64.tar.gz -C rootfs
