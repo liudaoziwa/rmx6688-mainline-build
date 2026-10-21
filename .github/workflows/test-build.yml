@@ -227,7 +227,15 @@ jobs:
             /usr/share/dotnet \
             /opt/ghc \
             /opt/hostedtoolcache/CodeQL \
-            /usr/local/share/boost
+            /usr/local/share/boost \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            /opt/az \
+            /usr/local/.ghcup \
+            /usr/lib/jvm \
+            /usr/local/share/chromium \
+            /opt/microsoft \
+            /opt/google
           sudo apt-get clean
           df -h /
 
@@ -405,9 +413,13 @@ jobs:
             sudo umount -lf rootfs/dev     2>/dev/null || true
             sudo umount -lf rootfs/proc    2>/dev/null || true
             sudo umount -lf rootfs/sys     2>/dev/null || true
+            sudo umount -lf rootfs         2>/dev/null || true
           }
           trap cleanup EXIT
 
+          # pacman 的 CheckSpace 依赖 chroot 根是挂载点；
+          # rootfs 只是普通目录时 bind 到自身即可，否则会误报磁盘空间不足。
+          sudo mount --bind rootfs rootfs
           sudo mount -t proc  proc  rootfs/proc
           sudo mount -t sysfs sysfs rootfs/sys
           sudo mount --bind /dev rootfs/dev
