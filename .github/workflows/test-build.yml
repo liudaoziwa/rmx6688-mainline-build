@@ -6,10 +6,8 @@ name: build-kernel-and-rootfs
 # 本文件的 rootfs job 只做 rootfs：
 #   - 在 GitHub 原生 arm64 Ubuntu runner（ubuntu-24.04-arm）上构建，
 #     Arch Linux ARM aarch64 直接 chroot，不需要 qemu-user-static/binfmt；
-#   - 不编译/不安装内核模块，也不跑 depmod；
+#   - 不安装任何固件包（含 linux-firmware），也不编译/安装内核模块、不跑 depmod；
 #   - rootfs 的 /boot 也清空，内核/initramfs 由外部 boot 分区提供；
-#   - 把 rmx6688-initramfs-and-firmware 里的定制 firmware 放进 rootfs
-#     （同时安装发行版的 linux-firmware-mediatek 作为补充）；
 #   - 默认安装 KDE Plasma（plasma-meta + Plasma Login Manager），
 #     可用 INSTALL_KDE=false 回到 headless；
 #   - 目前只做 Arch Linux ARM aarch64，后续可照这个 job 加别的发行版。
@@ -73,11 +71,6 @@ on:
         required: false
         default: "networkmanager wpa_supplicant iwd openssh sudo vim less curl wget ca-certificates htop bluez bluez-utils iw tzdata"
         type: string
-      FIRMWARE_PACKAGES:
-        description: "发行版固件包（空格分隔；仓库内定制固件会覆盖同名文件）"
-        required: false
-        default: "linux-firmware-mediatek wireless-regdb"
-        type: string
       UPLOAD_RAW_IMG:
         description: "同时上传未压缩的 rootfs.img（体积大）"
         required: false
@@ -95,7 +88,6 @@ env:
   TOOLCHAIN: clang
   KERNEL_REPO: https://github.com/liudaoziwa/mainline-mt6991.git
   INITRAMFS_REPO: https://github.com/liudaoziwa/rmx6688-initramfs-and-firmware.git
-  FIRMWARE_REPO: https://github.com/liudaoziwa/rmx6688-initramfs-and-firmware.git
   # os.archlinuxarm.org 的 HTTPS 证书当前与域名不匹配，改用可信 HTTPS 镜像。
   ALARM_TARBALL: https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm/os/ArchLinuxARM-aarch64-latest.tar.gz
   ALARM_TARBALL_FALLBACK: https://mirrors.ustc.edu.cn/archlinuxarm/os/ArchLinuxARM-aarch64-latest.tar.gz
@@ -149,7 +141,7 @@ jobs:
 
   # ==========================================================
   # Job 2：Arch Linux ARM64 rootfs
-  # 独立于内核 job，不依赖内核模块；firmware 直接写进 rootfs。
+  # 独立于内核 job；不安装固件和内核模块。
   # ==========================================================
   rootfs:
     name: build Arch Linux ARM64 rootfs
@@ -168,7 +160,6 @@ jobs:
       DESKTOP_USER: ${{ github.event.inputs.DESKTOP_USER || 'arch' }}
       DESKTOP_PASSWORD: ${{ github.event.inputs.DESKTOP_PASSWORD || '' }}
       EXTRA_PACKAGES: ${{ github.event.inputs.EXTRA_PACKAGES || 'networkmanager wpa_supplicant iwd openssh sudo vim less curl wget ca-certificates htop bluez bluez-utils iw tzdata' }}
-      FIRMWARE_PACKAGES: ${{ github.event.inputs.FIRMWARE_PACKAGES || 'linux-firmware-mediatek wireless-regdb' }}
       # init-rootfs.c 用 ext4 label "rootfs" 作为 UUID 失配后的兜底，不要随便改。
       ROOTFS_LABEL: rootfs
 
@@ -215,7 +206,6 @@ jobs:
           echo "desktop: install_kde=$INSTALL_KDE user=$DESKTOP_USER"
           echo "extra packages: $EXTRA_PACKAGES"
           echo "KDE packages: $KDE_PACKAGES"
-          echo "firmware packages: $FIRMWARE_PACKAGES"
 
       - name: Free runner disk for KDE rootfs
         run: |
@@ -278,6 +268,18 @@ jobs:
           # 不用发行版内核：rootfs 由主线内核启动，且这里不安装内核模块。
           pacman -Rdd --noconfirm linux-aarch64 || true
 
+          # 本 workflow 不安装任何固件；ALARM 基础包自带的 linux-firmware
+          # 也要移除，避免 pacman 升级时继续保留这些无用文件。
+          remove_firmware() {
+            # linux-firmware 的拆分包、wireless-regdb，以及其它 *firmware 包。
+            mapfile -t fw_pkgs < <(pacman -Qq | grep -E '(^linux-firmware|firmware$|^wireless-regdb$)' || true)
+            if [ "${#fw_pkgs[@]}" -gt 0 ]; then
+              pacman -Rdd --noconfirm "${fw_pkgs[@]}"
+            fi
+            rm -rf /usr/lib/firmware /lib/firmware
+          }
+          remove_firmware
+
           pacman -Syu --noconfirm --disable-download-timeout
 
           if [ -n "${ROOTFS_PACKAGES:-}" ]; then
@@ -293,14 +295,8 @@ jobs:
             pacman -S --noconfirm --needed --disable-download-timeout mesa
           fi
 
-          # 固件包缺失不应该让整个 rootfs 构建失败；仓库内定制固件稍后覆盖。
-          if [ -n "${ROOTFS_FIRMWARE:-}" ]; then
-            read -r -a fw_pkgs <<< "$ROOTFS_FIRMWARE"
-            for pkg in "${fw_pkgs[@]}"; do
-              pacman -S --noconfirm --needed --disable-download-timeout "$pkg" \
-                || echo "WARNING: firmware package $pkg unavailable"
-            done
-          fi
+          # KDE 或额外包若间接拉入固件，再清理一次。
+          remove_firmware
 
           printf '%s\n' "$ROOTFS_HOSTNAME" > /etc/hostname
           cat > /etc/hosts <<HOSTS_EOF
@@ -436,61 +432,10 @@ jobs:
             ROOTFS_DESKTOP_USER="$DESKTOP_USER" \
             ROOTFS_DESKTOP_PASSWORD="${DESKTOP_PASSWORD:-$ROOT_PASSWORD}" \
             ROOTFS_PACKAGES="$EXTRA_PACKAGES" \
-            ROOTFS_FIRMWARE="$FIRMWARE_PACKAGES" \
             /bin/bash /root/setup-rootfs.sh
 
           cleanup
           trap - EXIT
-
-      - name: Install device firmware into rootfs
-        run: |
-          set -euo pipefail
-          git clone --depth 1 "$FIRMWARE_REPO" firmware-src
-          test -d firmware-src/firmware
-
-          sudo mkdir -p rootfs/lib/firmware/mediatek/mt6991
-          # 按 initramfs 的目录布局整体复制：
-          #   /lib/firmware/{BT,WIFI}*, /lib/firmware/arm/mali/...,
-          #   /lib/firmware/tp/24618/..., tfa98xx.cnt, md1drdi.bin
-          sudo cp -a firmware-src/firmware/. rootfs/lib/firmware/
-
-          # 内核/驱动同时会找 MediaTek 前缀路径，和 build.sh 的 cpio_list 保持一致。
-          for f in \
-            BT_RAM_CODE_MT6653_2g2a_1_hdr.bin \
-            WIFI_RAM_CODE_MT6653_2g2a_1.bin \
-            WIFI_MT6653_PATCH_MCU_2g2a_1_hdr.bin \
-            WIFI_MT6653_PHY_RAM_CODE_2g2a_1.bin; do
-            sudo install -Dm644 "firmware-src/firmware/$f" "rootfs/lib/firmware/mediatek/$f"
-          done
-          sudo install -Dm644 firmware-src/firmware/WIFI rootfs/lib/firmware/mediatek/WIFI
-          sudo install -Dm644 firmware-src/firmware/WIFI rootfs/lib/firmware/mediatek/mt6991/WIFI
-          # git clone 出来的文件属于 runner 用户，统一改回 root。
-          sudo chown -R root:root rootfs/lib/firmware
-
-          for f in \
-            lib/firmware/BT_RAM_CODE_MT6653_2g2a_1_hdr.bin \
-            lib/firmware/BT_RAM_CODE_MT6653_1_1_hdr.bin \
-            lib/firmware/BT_FW.cfg \
-            lib/firmware/mediatek/BT_RAM_CODE_MT6653_2g2a_1_hdr.bin \
-            lib/firmware/WIFI \
-            lib/firmware/WIFI_RAM_CODE_MT6653_2g2a_1.bin \
-            lib/firmware/WIFI_MT6653_PATCH_MCU_2g2a_1_hdr.bin \
-            lib/firmware/WIFI_MT6653_PHY_RAM_CODE_2g2a_1.bin \
-            lib/firmware/conninfra.cfg \
-            lib/firmware/connfem.cfg \
-            lib/firmware/mediatek/WIFI \
-            lib/firmware/mediatek/WIFI_RAM_CODE_MT6653_2g2a_1.bin \
-            lib/firmware/mediatek/WIFI_MT6653_PATCH_MCU_2g2a_1_hdr.bin \
-            lib/firmware/mediatek/WIFI_MT6653_PHY_RAM_CODE_2g2a_1.bin \
-            lib/firmware/mediatek/mt6991/WIFI \
-            lib/firmware/tfa98xx.cnt \
-            lib/firmware/md1drdi.bin \
-            lib/firmware/arm/mali/arch13.8/mali_csffw.bin \
-            lib/firmware/tp/24618/FW_S3910_TIANMA_HBP.img; do
-            test -f "rootfs/$f" || { echo "::error::定制固件缺失：$f"; exit 1; }
-          done
-          du -sh rootfs/lib/firmware
-          rm -rf firmware-src
 
       - name: Clean chroot artifacts and remove all kernel modules
         run: |
@@ -535,19 +480,30 @@ jobs:
       - name: Verify rootfs
         run: |
           set -euo pipefail
-          if [ ! -e rootfs/sbin/init ] && [ -e rootfs/usr/lib/systemd/systemd ]; then
+          if [ ! -e rootfs/sbin/init ] && [ ! -L rootfs/sbin/init ] && [ -e rootfs/usr/lib/systemd/systemd ]; then
             echo "WARNING: /sbin/init 缺失，补一个到 systemd 的软链接"
             sudo mkdir -p rootfs/sbin
             sudo ln -sf /usr/lib/systemd/systemd rootfs/sbin/init
           fi
-          test -e rootfs/sbin/init || { echo "::error::rootfs 里没有 /sbin/init"; exit 1; }
+          { [ -e rootfs/sbin/init ] || [ -L rootfs/sbin/init ]; } \
+            || { echo "::error::rootfs 里没有 /sbin/init"; exit 1; }
           test -e rootfs/usr/lib/systemd/systemd
           test -f rootfs/etc/fstab
           grep -q '^LABEL=rootfs' rootfs/etc/fstab
           test -f rootfs/etc/hostname
           test -f rootfs/etc/hosts
-          test -d rootfs/lib/firmware/mediatek
-          test -f rootfs/lib/firmware/mediatek/mt6991/WIFI
+          # 不安装固件：既不能有固件/regulatory 包，也不能有固件文件。
+          if compgen -G "rootfs/var/lib/pacman/local/*firmware-*" >/dev/null \
+            || compgen -G "rootfs/var/lib/pacman/local/wireless-regdb-*" >/dev/null; then
+            echo "::error::rootfs 里仍然安装了固件/regulatory 包"
+            exit 1
+          fi
+          for d in rootfs/lib/firmware rootfs/usr/lib/firmware; do
+            if [ -d "$d" ] && [ -n "$(find "$d" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+              echo "::error::$d 不是空的，本工作流不应安装固件"
+              exit 1
+            fi
+          done
           for d in rootfs/lib/modules rootfs/usr/lib/modules; do
             if [ -d "$d" ] && [ -n "$(find "$d" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
               echo "::error::$d 不是空的，本工作流不应安装内核模块"
@@ -555,9 +511,9 @@ jobs:
             fi
           done
 
-          test -e rootfs/etc/systemd/system/multi-user.target.wants/sshd.service \
+          test -L rootfs/etc/systemd/system/multi-user.target.wants/sshd.service \
             || echo "WARNING: sshd 未设置开机自启"
-          test -e rootfs/etc/systemd/system/multi-user.target.wants/NetworkManager.service \
+          test -L rootfs/etc/systemd/system/multi-user.target.wants/NetworkManager.service \
             || echo "WARNING: NetworkManager 未设置开机自启"
 
           if [ "$INSTALL_KDE" = "true" ]; then
@@ -569,7 +525,7 @@ jobs:
               || { echo "::error::缺少 Plasma Wayland 会话文件"; exit 1; }
             compgen -G "rootfs/var/lib/pacman/local/mesa-*" >/dev/null \
               || { echo "::error::KDE 已启用但未安装 mesa"; exit 1; }
-            test -e rootfs/etc/systemd/system/display-manager.service \
+            test -L rootfs/etc/systemd/system/display-manager.service \
               || { echo "::error::display-manager.service 未启用"; exit 1; }
             readlink rootfs/etc/systemd/system/default.target | grep -q 'graphical.target' \
               || { echo "::error::默认 systemd target 不是 graphical.target"; exit 1; }
@@ -588,8 +544,6 @@ jobs:
 
           echo "--- /sbin/init ---"
           ls -l rootfs/sbin/init
-          echo "--- firmware ---"
-          ls -l rootfs/lib/firmware/mediatek
           echo "--- modules ---"
           ls -la rootfs/lib/modules
 
@@ -692,7 +646,7 @@ jobs:
             echo "| 镜像大小 | \`$ROOTFS_SIZE\` |"
             echo "| ext4 label | \`$ROOTFS_LABEL\` |"
             echo "| 主机名 | \`$ROOTFS_HOSTNAME\` |"
-            echo "| 固件 | rmx6688 定制固件 + \`$FIRMWARE_PACKAGES\` |"
+            echo "| 固件 | 未安装（按设计） |"
             echo "| 内核模块 | 未安装（按设计） |"
             echo ""
             echo '```'
