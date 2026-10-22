@@ -8,9 +8,10 @@ name: build-kernel-and-rootfs
 #     Arch Linux ARM aarch64 直接 chroot，不需要 qemu-user-static/binfmt；
 #   - 不安装任何固件包（含 linux-firmware），也不编译/安装内核模块、不跑 depmod；
 #   - rootfs 的 /boot 也清空，内核/initramfs 由外部 boot 分区提供；
-#   - 默认安装 KDE Plasma（plasma-meta + Plasma Login Manager），
+#   - 默认安装 KDE Plasma Mobile（plasma-mobile + Plasma Login Manager），
 #     可用 INSTALL_KDE=false 回到 headless；
 #   - 目前只做 Arch Linux ARM aarch64，后续可照这个 job 加别的发行版。
+#   - 只支持手动 workflow_dispatch 触发，push 不再触发构建。
 #
 # rootfs 的关键约定（来自 init-rootfs.c）：
 #   - initramfs 按 ext4 label "rootfs" 查找根分区，所以镜像必须 -L rootfs；
@@ -18,8 +19,6 @@ name: build-kernel-and-rootfs
 #   - 镜像刷到 GPT 名为 rootfs 的分区（或任意 ext4 分区）即可。
 # =============================================================================
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch:
     inputs:
       TASK:
@@ -47,22 +46,22 @@ on:
         default: "1234"
         type: string
       INSTALL_KDE:
-        description: "安装 KDE Plasma 桌面（默认开启）"
+        description: "安装 KDE Plasma Mobile 桌面（默认开启）"
         required: false
         default: true
         type: boolean
       KDE_PACKAGES:
-        description: "KDE 桌面包（空格分隔；仅在 INSTALL_KDE=true 时安装）"
+        description: "KDE Plasma Mobile 桌面包（空格分隔；仅在 INSTALL_KDE=true 时安装）"
         required: false
-        default: "plasma-meta mesa konsole dolphin kate pipewire pipewire-pulse wireplumber noto-fonts-cjk ttf-dejavu alsa-ucm-conf"
+        default: "plasma-mobile plasma-settings plasma-login-manager kscreen bluedevil mesa pipewire pipewire-pulse wireplumber noto-fonts-cjk ttf-dejavu alsa-ucm-conf"
         type: string
       DESKTOP_USER:
-        description: "KDE 桌面用户名"
+        description: "桌面用户名"
         required: false
         default: "arch"
         type: string
       DESKTOP_PASSWORD:
-        description: "KDE 桌面用户密码（留空则与 root 相同）"
+        description: "桌面用户密码（留空则与 root 相同）"
         required: false
         default: ""
         type: string
@@ -95,11 +94,11 @@ env:
 jobs:
   # ==========================================================
   # Job 1：内核（保持原逻辑）
-  # 手动触发时由 TASK 控制；push 时仍然构建。
+  # 仅手动触发，由 TASK 控制；push 不再触发构建。
   # ==========================================================
   build:
     name: build Image
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.TASK == '全部' || github.event.inputs.TASK == '仅内核')) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.TASK == '全部' || github.event.inputs.TASK == '仅内核') }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
 
@@ -145,10 +144,10 @@ jobs:
   # ==========================================================
   rootfs:
     name: build Arch Linux ARM64 rootfs
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.TASK == '全部' || github.event.inputs.TASK == '仅RootFS')) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.TASK == '全部' || github.event.inputs.TASK == '仅RootFS') }}
     # rootfs 用原生 arm64 runner，避免 x86_64 + qemu 的慢速模拟。
     runs-on: ubuntu-24.04-arm
-    # KDE 安装和 8G 镜像写入比 headless 慢，留足时间。
+    # Plasma Mobile 安装和 8G 镜像写入比 headless 慢，留足时间。
     timeout-minutes: 180
 
     env:
@@ -156,7 +155,7 @@ jobs:
       ROOTFS_HOSTNAME: ${{ github.event.inputs.ROOTFS_HOSTNAME || 'rmx6688' }}
       ROOT_PASSWORD: ${{ github.event.inputs.ROOT_PASSWORD || '1234' }}
       INSTALL_KDE: ${{ github.event.inputs.INSTALL_KDE || 'true' }}
-      KDE_PACKAGES: ${{ github.event.inputs.KDE_PACKAGES || 'plasma-meta mesa konsole dolphin kate pipewire pipewire-pulse wireplumber noto-fonts-cjk ttf-dejavu alsa-ucm-conf' }}
+      KDE_PACKAGES: ${{ github.event.inputs.KDE_PACKAGES || 'plasma-mobile plasma-settings plasma-login-manager kscreen bluedevil mesa pipewire pipewire-pulse wireplumber noto-fonts-cjk ttf-dejavu alsa-ucm-conf' }}
       DESKTOP_USER: ${{ github.event.inputs.DESKTOP_USER || 'arch' }}
       DESKTOP_PASSWORD: ${{ github.event.inputs.DESKTOP_PASSWORD || '' }}
       EXTRA_PACKAGES: ${{ github.event.inputs.EXTRA_PACKAGES || 'networkmanager wpa_supplicant iwd openssh sudo vim less curl wget ca-certificates htop bluez bluez-utils iw tzdata' }}
@@ -207,11 +206,11 @@ jobs:
           echo "extra packages: $EXTRA_PACKAGES"
           echo "KDE packages: $KDE_PACKAGES"
 
-      - name: Free runner disk for KDE rootfs
+      - name: Free runner disk for Plasma Mobile rootfs
         run: |
           set -euo pipefail
           # GitHub runner 预装的 Android SDK / .NET / GHC 等与本构建无关；
-          # KDE + 8G 镜像需要更多可用空间。
+          # Plasma Mobile + 8G 镜像需要更多可用空间。
           sudo rm -rf \
             /usr/local/lib/android \
             /usr/share/dotnet \
@@ -287,7 +286,8 @@ jobs:
             pacman -S --noconfirm --needed --disable-download-timeout "${pkgs[@]}"
           fi
 
-          # 默认安装 KDE Plasma；plasma-meta 当前会拉入 Plasma Login Manager。
+          # 默认安装 KDE Plasma Mobile；plasma-mobile 提供手机 shell，
+          # Plasma Login Manager 负责登录。
           if [ "${ROOTFS_INSTALL_KDE:-true}" = "true" ]; then
             read -r -a kde_pkgs <<< "$ROOTFS_KDE_PACKAGES"
             pacman -S --noconfirm --needed --disable-download-timeout "${kde_pkgs[@]}"
@@ -295,7 +295,7 @@ jobs:
             pacman -S --noconfirm --needed --disable-download-timeout mesa
           fi
 
-          # KDE 或额外包若间接拉入固件，再清理一次。
+          # Plasma Mobile 或额外包若间接拉入固件，再清理一次。
           remove_firmware
 
           printf '%s\n' "$ROOTFS_HOSTNAME" > /etc/hostname
@@ -324,7 +324,7 @@ jobs:
           printf 'root:%s\n' "$ROOTFS_PASSWORD" | chpasswd
 
           if [ "${ROOTFS_INSTALL_KDE:-true}" = "true" ]; then
-            # KDE 不允许 root 图形会话，创建一个普通桌面用户。
+            # 图形会话不允许 root 登录，创建一个普通桌面用户。
             if ! id "$ROOTFS_DESKTOP_USER" >/dev/null 2>&1; then
               useradd -m -s /bin/bash "$ROOTFS_DESKTOP_USER"
             fi
@@ -361,10 +361,17 @@ jobs:
           systemctl enable serial-getty@ttyS0.service 2>/dev/null || true
 
           if [ "${ROOTFS_INSTALL_KDE:-true}" = "true" ]; then
-            # Plasma Login Manager 与 getty@tty1 冲突，KDE 下不启用文本 getty。
+            # Plasma Login Manager 与 getty@tty1 冲突，桌面环境下不启用文本 getty。
             systemctl disable getty@tty1.service 2>/dev/null || true
             if [ -e /usr/lib/systemd/system/plasmalogin.service ]; then
               systemctl enable plasmalogin.service
+              # 让 Plasma Login Manager 默认选中 Plasma Mobile 会话，
+              # 而不是同一个 plasma-workspace 里的桌面 Plasma 会话。
+              cat > /etc/plasmalogin.conf <<'PLASMALOGIN_EOF'
+          [Greeter]
+          PreselectedSession=plasma-mobile.desktop
+          PLASMALOGIN_EOF
+              chmod 644 /etc/plasmalogin.conf
             elif [ -e /usr/lib/systemd/system/sddm.service ]; then
               systemctl enable sddm.service
             else
@@ -518,13 +525,19 @@ jobs:
 
           if [ "$INSTALL_KDE" = "true" ]; then
             test -x rootfs/usr/bin/plasmalogin \
-              || { echo "::error::KDE 已启用但缺少 plasmalogin"; exit 1; }
+              || { echo "::error::Plasma Mobile 已启用但缺少 plasmalogin"; exit 1; }
             test -x rootfs/usr/bin/startplasma-wayland \
-              || { echo "::error::KDE 已启用但缺少 startplasma-wayland"; exit 1; }
-            test -f rootfs/usr/share/wayland-sessions/plasma.desktop \
-              || { echo "::error::缺少 Plasma Wayland 会话文件"; exit 1; }
+              || { echo "::error::Plasma Mobile 缺少 startplasma-wayland 依赖"; exit 1; }
+            test -x rootfs/usr/bin/startplasmamobile \
+              || { echo "::error::Plasma Mobile 已启用但缺少 startplasmamobile"; exit 1; }
+            test -f rootfs/usr/share/wayland-sessions/plasma-mobile.desktop \
+              || { echo "::error::缺少 Plasma Mobile Wayland 会话文件"; exit 1; }
+            compgen -G "rootfs/var/lib/pacman/local/plasma-mobile-*" >/dev/null \
+              || { echo "::error::Plasma Mobile 已启用但未安装 plasma-mobile"; exit 1; }
+            grep -q '^PreselectedSession=plasma-mobile.desktop$' rootfs/etc/plasmalogin.conf \
+              || { echo "::error::Plasma Login Manager 未默认选择 Plasma Mobile"; exit 1; }
             compgen -G "rootfs/var/lib/pacman/local/mesa-*" >/dev/null \
-              || { echo "::error::KDE 已启用但未安装 mesa"; exit 1; }
+              || { echo "::error::Plasma Mobile 已启用但未安装 mesa"; exit 1; }
             test -L rootfs/etc/systemd/system/display-manager.service \
               || { echo "::error::display-manager.service 未启用"; exit 1; }
             readlink rootfs/etc/systemd/system/default.target | grep -q 'graphical.target' \
@@ -535,9 +548,9 @@ jobs:
               || { echo "::error::桌面用户 ${DESKTOP_USER} 的 home 不存在"; exit 1; }
             sudo grep -q '^%wheel ALL=(ALL:ALL) ALL$' rootfs/etc/sudoers.d/10-wheel \
               || { echo "::error::wheel sudo 配置缺失"; exit 1; }
-            echo "KDE desktop user: $DESKTOP_USER"
+            echo "Plasma Mobile desktop user: $DESKTOP_USER"
           else
-            echo "KDE disabled: checking headless target"
+            echo "Plasma Mobile disabled: checking headless target"
             readlink rootfs/etc/systemd/system/default.target | grep -q 'multi-user.target' \
               || { echo "::error::headless rootfs 的默认 target 不是 multi-user.target"; exit 1; }
           fi
@@ -628,7 +641,7 @@ jobs:
       - name: Write job summary
         run: |
           if [ "$INSTALL_KDE" = "true" ]; then
-            desktop_desc="KDE Plasma + Plasma Login Manager + Mesa"
+            desktop_desc="KDE Plasma Mobile + Plasma Login Manager + Mesa"
             desktop_account="$DESKTOP_USER"
           else
             desktop_desc="未安装（headless）"
