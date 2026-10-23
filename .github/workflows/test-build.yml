@@ -31,9 +31,9 @@ on:
           - "仅内核"
           - "全部"
       ROOTFS_SIZE:
-        description: "rootfs 镜像大小（KDE 建议至少 8G）"
+        description: "rootfs 镜像大小（Plasma Mobile 建议 5G）"
         required: true
-        default: "8G"
+        default: "5G"
         type: string
       ROOTFS_HOSTNAME:
         description: "rootfs 主机名"
@@ -147,11 +147,11 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.TASK == '全部' || github.event.inputs.TASK == '仅RootFS') }}
     # rootfs 用原生 arm64 runner，避免 x86_64 + qemu 的慢速模拟。
     runs-on: ubuntu-24.04-arm
-    # Plasma Mobile 安装和 8G 镜像写入比 headless 慢，留足时间。
+    # Plasma Mobile 安装和 5G 镜像写入比 headless 慢，留足时间。
     timeout-minutes: 180
 
     env:
-      ROOTFS_SIZE: ${{ github.event.inputs.ROOTFS_SIZE || '8G' }}
+      ROOTFS_SIZE: ${{ github.event.inputs.ROOTFS_SIZE || '5G' }}
       ROOTFS_HOSTNAME: ${{ github.event.inputs.ROOTFS_HOSTNAME || 'rmx6688' }}
       ROOT_PASSWORD: ${{ github.event.inputs.ROOT_PASSWORD || '1234' }}
       INSTALL_KDE: ${{ github.event.inputs.INSTALL_KDE || 'true' }}
@@ -172,7 +172,7 @@ jobs:
             exit 1
           fi
           if ! [[ "$ROOTFS_SIZE" =~ ^[0-9]+[GgMm]$ ]]; then
-            echo "::error::ROOTFS_SIZE 必须是类似 8G / 8192M 的值，当前：$ROOTFS_SIZE"
+            echo "::error::ROOTFS_SIZE 必须是类似 5G / 5120M 的值，当前：$ROOTFS_SIZE"
             exit 1
           fi
           if ! [[ "$ROOTFS_HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
@@ -210,7 +210,7 @@ jobs:
         run: |
           set -euo pipefail
           # GitHub runner 预装的 Android SDK / .NET / GHC 等与本构建无关；
-          # Plasma Mobile + 8G 镜像需要更多可用空间。
+          # Plasma Mobile + 5G 镜像需要更多可用空间。
           sudo rm -rf \
             /usr/local/lib/android \
             /usr/share/dotnet \
