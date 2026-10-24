@@ -841,6 +841,11 @@ jobs:
           # bsdtar 显式保留 ACL / xattr（file capabilities）；普通 tar 会丢。
           sudo bsdtar --acls --xattrs -xpf ubuntu-base-26.10-arm64.tar.gz -C rootfs
           test -x rootfs/bin/bash
+          # rootfs 目录本身是 runner 用户创建的；bsdtar 只改归档内条目的属主，
+          # 不会把目录自身改成 root。chroot 后 `/` 会显示 UID 1001，
+          # systemd-tmpfiles 会判定 unsafe path transition 并以非零退出，
+          # 导致大量 postinst 失败，所以必须把 rootfs 顶层属主改回 root。
+          sudo chown 0:0 rootfs
           rm -f ubuntu-base-26.10-arm64.tar.gz
           ls -ld rootfs rootfs/usr rootfs/etc
 
@@ -878,10 +883,9 @@ jobs:
           # 必须显式安装 systemd + systemd-sysv，否则镜像无法启动。
           #
           # Ubuntu 26.10 起默认 D-Bus 实现改为 dbus-broker，dbus / dbus-daemon
-          # 已降级到 universe。legacy dbus-daemon 的 postinst 在 chroot 中会因
-          # messagebus 用户尚未创建而失败，进而让所有依赖它的桌面包都无法配置。
-          # 这里统一使用 main 里的 dbus-broker + dbus-user-session；即使用户在
-          # UBUNTU_PACKAGES 里写了 legacy 的 dbus / dbus-daemon，也自动剔除。
+          # 已降级到 universe，桌面也不需要 legacy 实现。这里统一使用 main 里的
+          # dbus-broker + dbus-user-session；即使用户在 UBUNTU_PACKAGES 里写了
+          # legacy 的 dbus / dbus-daemon，也自动剔除。
           read -r -a requested_pkgs <<< "$ROOTFS_PACKAGES"
           ubuntu_pkgs=()
           for pkg in "${requested_pkgs[@]}"; do
@@ -1118,6 +1122,13 @@ jobs:
         run: |
           set -euo pipefail
           # runner 本身是 aarch64，chroot 可直接执行 Ubuntu arm64 的二进制。
+          # 顶层属主必须是 root：否则 chroot 内 systemd-tmpfiles 会报
+          # unsafe path transition，导致 polkitd 等包 postinst 失败。
+          rootfs_owner="$(stat -c '%u' rootfs)"
+          [ "$rootfs_owner" = 0 ] || {
+            echo "::error::rootfs 顶层属主不是 root：UID=$rootfs_owner"
+            exit 1
+          }
           sudo rm -f rootfs/etc/resolv.conf
           sudo cp /etc/resolv.conf rootfs/etc/resolv.conf
           # 宿主机若用 systemd-resolved stub，chroot 里没有该服务，换公共 DNS。
