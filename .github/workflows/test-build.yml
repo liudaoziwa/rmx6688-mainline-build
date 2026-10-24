@@ -1,12 +1,13 @@
 name: build-kernel-and-rootfs
 
 # =============================================================================
-# 内核 + Arch Linux ARM64 / Ubuntu 26.10 ARM64 rootfs 构建。
+# 内核 + Arch Linux ARM64 / Ubuntu 26.10 ARM64 / Fedora 44 ARM64 rootfs 构建。
 #
-# 本文件有两个 rootfs job，都只做 rootfs：
+# 本文件有三个 rootfs job，都只做 rootfs：
 #   - 在 GitHub 原生 arm64 Ubuntu runner（ubuntu-24.04-arm）上构建，
 #     直接 chroot，不需要 qemu-user-static/binfmt；
-#   - 不安装任何固件包（含 linux-firmware），也不编译/安装内核模块、不跑 depmod；
+#   - 不安装任何设备固件包（含 linux-firmware），也不编译/安装内核模块、不跑 depmod；
+#     Fedora job 例外保留 wireless-regdb（仅 regulatory.db，无设备固件，见该 job 注释）；
 #   - rootfs 的 /boot 都清空，内核/initramfs 由外部 boot 分区提供；
 #   - Arch job 默认安装 KDE Plasma Mobile（plasma-mobile + Plasma Login Manager），
 #     可用 INSTALL_KDE=false 回到 headless；
@@ -15,6 +16,9 @@ name: build-kernel-and-rootfs
 #     （verdre/{mutter,gnome-settings-daemon,gnome-shell}-mobile）按 tag
 #     源码构建，并覆盖发行版的 mutter / gnome-settings-daemon / gnome-shell；
 #     安装 iio-sensor-proxy（自动旋转）、ModemManager（蜂窝网络）等移动端组件。
+#   - Fedora job 安装 Fedora 44 arm64 + Phosh：使用 Fedora 的 phosh-desktop
+#     组安装手机 shell、Stevia 屏幕键盘和 phrog 触摸登录器；同样安装
+#     iio-sensor-proxy、ModemManager、calls/chatty 等移动端组件。
 #   - 只支持手动 workflow_dispatch 触发，push 不再触发构建。
 #
 # rootfs 的关键约定（来自 init-rootfs.c）：
@@ -33,6 +37,7 @@ on:
         options:
           - "仅RootFS"
           - "仅Ubuntu"
+          - "仅Fedora"
           - "仅内核"
           - "全部"
       ROOTFS_SIZE:
@@ -44,6 +49,11 @@ on:
         description: "Ubuntu rootfs 镜像大小（GNOME Shell Mobile 建议 6G）"
         required: true
         default: "6G"
+        type: string
+      FEDORA_ROOTFS_SIZE:
+        description: "Fedora rootfs 镜像大小（Phosh 桌面建议 8G）"
+        required: true
+        default: "8G"
         type: string
       ROOTFS_HOSTNAME:
         description: "rootfs 主机名"
@@ -80,6 +90,11 @@ on:
         required: false
         default: "ubuntu"
         type: string
+      FEDORA_DESKTOP_USER:
+        description: "Fedora rootfs 桌面用户名"
+        required: false
+        default: "fedora"
+        type: string
       EXTRA_PACKAGES:
         description: "额外安装的 Arch 包（空格分隔）"
         required: false
@@ -88,12 +103,17 @@ on:
       UBUNTU_PACKAGES:
         description: "Ubuntu rootfs 安装的包（空格分隔；GNOME Shell Mobile + 移动端应用）"
         required: false
-        default: "systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus dbus-user-session libpam-systemd libnss-systemd gnome-session gnome-shell gdm3 gnome-settings-daemon gnome-control-center gnome-bluetooth-sendto gnome-keyring network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 callaudiod feedbackd pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2"
+        default: "systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus-broker dbus-bin dbus-user-session libpam-systemd libnss-systemd gnome-session gnome-shell gdm3 gnome-settings-daemon gnome-control-center gnome-bluetooth-sendto gnome-keyring network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 callaudiod feedbackd pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2"
         type: string
       GNOME_MOBILE_TAG:
         description: "GNOME Shell Mobile 源码 tag（mutter / gsd / shell 三个仓库一致）"
         required: false
         default: "51.1.mobile.3"
+        type: string
+      FEDORA_PACKAGES:
+        description: "Fedora rootfs 额外安装的包（空格分隔；Phosh 桌面组始终安装）"
+        required: false
+        default: "stevia-phosh-osk-provider gnome-control-center gnome-keyring nautilus gnome-text-editor eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer snapshot gnome-weather gnome-characters gnome-usage mmsd-tng xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-fuse gvfs-mtp power-profiles-daemon upower accountsservice polkit iio-sensor-proxy geoclue2 ModemManager usb_modeswitch bluez bluez-tools callaudiod pipewire pipewire-pulseaudio wireplumber alsa-ucm pipewire-alsa mesa-dri-drivers mesa-vulkan-drivers NetworkManager-wifi wpa_supplicant iwd openssh-server sudo vim-minimal less curl wget2-wget ca-certificates htop tzdata glibc-langpack-en chrony systemd systemd-resolved dbus dbus-broker dbus-daemon google-noto-sans-cjk-fonts google-noto-serif-cjk-fonts google-noto-color-emoji-fonts dejavu-sans-fonts"
         type: string
       UPLOAD_RAW_IMG:
         description: "同时上传未压缩的 rootfs.img（体积大）"
@@ -727,7 +747,7 @@ jobs:
       ROOT_PASSWORD: ${{ github.event.inputs.ROOT_PASSWORD || '1234' }}
       UBUNTU_DESKTOP_USER: ${{ github.event.inputs.UBUNTU_DESKTOP_USER || 'ubuntu' }}
       DESKTOP_PASSWORD: ${{ github.event.inputs.DESKTOP_PASSWORD || '' }}
-      UBUNTU_PACKAGES: ${{ github.event.inputs.UBUNTU_PACKAGES || 'systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus dbus-user-session libpam-systemd libnss-systemd gnome-session gnome-shell gdm3 gnome-settings-daemon gnome-control-center gnome-bluetooth-sendto gnome-keyring network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 callaudiod feedbackd pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2' }}
+      UBUNTU_PACKAGES: ${{ github.event.inputs.UBUNTU_PACKAGES || 'systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus-broker dbus-bin dbus-user-session libpam-systemd libnss-systemd gnome-session gnome-shell gdm3 gnome-settings-daemon gnome-control-center gnome-bluetooth-sendto gnome-keyring network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 callaudiod feedbackd pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2' }}
       GNOME_MOBILE_TAG: ${{ github.event.inputs.GNOME_MOBILE_TAG || '51.1.mobile.3' }}
       # init-rootfs.c 用 ext4 label "rootfs" 作为 UUID 失配后的兜底，不要随便改。
       ROOTFS_LABEL: rootfs
@@ -856,7 +876,26 @@ jobs:
           echo "=== [2/9] 安装 GNOME Shell Mobile 运行所需软件包 ==="
           # ubuntu-base 只带 libsystemd0，没有 systemd / systemctl / /sbin/init，
           # 必须显式安装 systemd + systemd-sysv，否则镜像无法启动。
-          read -r -a ubuntu_pkgs <<< "$ROOTFS_PACKAGES"
+          #
+          # Ubuntu 26.10 起默认 D-Bus 实现改为 dbus-broker，dbus / dbus-daemon
+          # 已降级到 universe。legacy dbus-daemon 的 postinst 在 chroot 中会因
+          # messagebus 用户尚未创建而失败，进而让所有依赖它的桌面包都无法配置。
+          # 这里统一使用 main 里的 dbus-broker + dbus-user-session；即使用户在
+          # UBUNTU_PACKAGES 里写了 legacy 的 dbus / dbus-daemon，也自动剔除。
+          read -r -a requested_pkgs <<< "$ROOTFS_PACKAGES"
+          ubuntu_pkgs=()
+          for pkg in "${requested_pkgs[@]}"; do
+            case "$pkg" in
+              dbus|dbus-daemon)
+                echo "WARNING: Ubuntu 26.10 不再使用 legacy $pkg，改用 dbus-broker"
+                ;;
+              *)
+                ubuntu_pkgs+=("$pkg")
+                ;;
+            esac
+          done
+          # 用户自定义包列表可能没有带 D-Bus；桌面必须依赖它们。
+          ubuntu_pkgs+=(dbus-broker dbus-bin dbus-user-session)
           apt-get install -y --no-install-recommends "${ubuntu_pkgs[@]}"
 
           echo "=== [3/9] 安装构建依赖（mutter / gnome-shell / gnome-settings-daemon） ==="
@@ -906,6 +945,9 @@ jobs:
           glib-compile-schemas /usr/share/glib-2.0/schemas || true
 
           echo "=== [7/9] 清理构建依赖并恢复自编译文件 ==="
+          # Ubuntu 26.10 的 build-dep 可能为测试把 legacy dbus / dbus-daemon 拉回来；
+          # 最终镜像统一使用 dbus-broker，这里先剔除，再走 autoremove。
+          apt-get purge -y dbus dbus-daemon >/dev/null 2>&1 || true
           if [ -s /root/build-deps.list ]; then
             # 把构建期新增包标记为 auto 后再 autoremove；运行期手动安装的包
             # 及其依赖不会被误删，只清掉纯构建依赖。
@@ -1356,4 +1398,665 @@ jobs:
             echo ""
             echo "注意：mutter / gnome-settings-daemon / gnome-shell 已被源码构建的 mobile 版本覆盖，"
             echo "对应发行版包已 \`apt-mark hold\`，避免 \`apt upgrade\` 覆盖回去。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ==========================================================
+  # Job 4：Fedora 44 ARM64 rootfs（Phosh，移动端适配）
+  # 独立于内核和 Arch/Ubuntu rootfs；不安装设备固件和内核模块，
+  # 仅保留 NetworkManager-wifi 硬依赖的 wireless-regdb 监管数据库。
+  # Fedora 仓库里有完整的 Phosh 移动桌面：
+  #   - phosh-desktop 组：Phosh 手机 shell + phoc + Stevia 屏幕键盘；
+  #   - phrog：基于 Phosh 的触摸登录器，开机直接进入手机风格登录界面；
+  #   - iio-sensor-proxy 自动旋转、ModemManager/calls/chatty 电话短信。
+  # 基础 rootfs 用 Fedora 官方 container base（quay.io），在原生 arm64
+  # chroot 里用 dnf 安装，不依赖 qemu。
+  # ==========================================================
+  fedora-rootfs:
+    name: build Fedora 44 ARM64 rootfs (Phosh)
+    if: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.TASK == '全部' || github.event.inputs.TASK == '仅Fedora') }}
+    runs-on: ubuntu-24.04-arm
+    # dnf 装包 + 8G 镜像写入比 Ubuntu job 轻，但 Fedora 仓库元数据较大。
+    timeout-minutes: 240
+
+    env:
+      FEDORA_ROOTFS_SIZE: ${{ github.event.inputs.FEDORA_ROOTFS_SIZE || '8G' }}
+      ROOTFS_HOSTNAME: ${{ github.event.inputs.ROOTFS_HOSTNAME || 'rmx6688' }}
+      ROOT_PASSWORD: ${{ github.event.inputs.ROOT_PASSWORD || '1234' }}
+      FEDORA_DESKTOP_USER: ${{ github.event.inputs.FEDORA_DESKTOP_USER || 'fedora' }}
+      DESKTOP_PASSWORD: ${{ github.event.inputs.DESKTOP_PASSWORD || '' }}
+      FEDORA_PACKAGES: ${{ github.event.inputs.FEDORA_PACKAGES || 'stevia-phosh-osk-provider gnome-control-center gnome-keyring nautilus gnome-text-editor eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer snapshot gnome-weather gnome-characters gnome-usage mmsd-tng xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-fuse gvfs-mtp power-profiles-daemon upower accountsservice polkit iio-sensor-proxy geoclue2 ModemManager usb_modeswitch bluez bluez-tools callaudiod pipewire pipewire-pulseaudio wireplumber alsa-ucm pipewire-alsa mesa-dri-drivers mesa-vulkan-drivers NetworkManager-wifi wpa_supplicant iwd openssh-server sudo vim-minimal less curl wget2-wget ca-certificates htop tzdata glibc-langpack-en chrony systemd systemd-resolved dbus dbus-broker dbus-daemon google-noto-sans-cjk-fonts google-noto-serif-cjk-fonts google-noto-color-emoji-fonts dejavu-sans-fonts' }}
+      FEDORA_RELEASE: "44"
+      # init-rootfs.c 用 ext4 label "rootfs" 作为 UUID 失配后的兜底，不要随便改。
+      ROOTFS_LABEL: rootfs
+
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          # 这个 job 固定用原生 arm64 runner；若 runner 被改回 x86_64，尽早报错。
+          if [ "$(uname -m)" != "aarch64" ]; then
+            echo "::error::fedora-rootfs job 必须在原生 aarch64 runner 上运行，当前架构：$(uname -m)"
+            exit 1
+          fi
+          if ! [[ "$FEDORA_ROOTFS_SIZE" =~ ^[0-9]+[GgMm]$ ]]; then
+            echo "::error::FEDORA_ROOTFS_SIZE 必须是类似 8G / 8192M 的值，当前：$FEDORA_ROOTFS_SIZE"
+            exit 1
+          fi
+          if ! [[ "$ROOTFS_HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
+            echo "::error::ROOTFS_HOSTNAME 不是合法主机名：$ROOTFS_HOSTNAME"
+            exit 1
+          fi
+          test -n "$ROOT_PASSWORD" || { echo "::error::ROOT_PASSWORD 不能为空"; exit 1; }
+          case "$ROOT_PASSWORD" in
+            *:*) echo "::error::ROOT_PASSWORD 不能包含冒号"; exit 1 ;;
+          esac
+          if ! [[ "$FEDORA_DESKTOP_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+            echo "::error::FEDORA_DESKTOP_USER 不是合法用户名：$FEDORA_DESKTOP_USER"
+            exit 1
+          fi
+          if [ "$FEDORA_DESKTOP_USER" = "root" ]; then
+            echo "::error::FEDORA_DESKTOP_USER 不能是 root（Phosh 不允许 root 图形会话）"
+            exit 1
+          fi
+          case "$DESKTOP_PASSWORD" in
+            *:*) echo "::error::DESKTOP_PASSWORD 不能包含冒号"; exit 1 ;;
+          esac
+          test -n "$FEDORA_PACKAGES" || { echo "::error::FEDORA_PACKAGES 不能为空"; exit 1; }
+          echo "fedora rootfs: release=$FEDORA_RELEASE size=$FEDORA_ROOTFS_SIZE hostname=$ROOTFS_HOSTNAME label=$ROOTFS_LABEL"
+          echo "desktop user: $FEDORA_DESKTOP_USER"
+          echo "packages: $FEDORA_PACKAGES"
+
+      - name: Free runner disk for Fedora rootfs
+        run: |
+          set -euo pipefail
+          # GitHub runner 预装的 Android SDK / .NET / GHC 等与本构建无关；
+          # Fedora rootfs + dnf 缓存需要更多可用空间。
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            /opt/az \
+            /usr/local/.ghcup \
+            /usr/lib/jvm \
+            /usr/local/share/chromium \
+            /opt/microsoft \
+            /opt/google
+          sudo apt-get clean
+          docker system prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            wget curl git ca-certificates \
+            e2fsprogs util-linux rsync \
+            libarchive-tools android-sdk-libsparse-utils
+          bsdtar --version
+          img2simg 2>&1 | head -1 || true
+          # 少数 runner 镜像没有预装 Docker；补装并确保 daemon 已启动，
+          # 后面要用 docker export 导出 Fedora container base。
+          if ! command -v docker >/dev/null 2>&1; then
+            sudo apt-get install -y --no-install-recommends docker.io
+          fi
+          sudo systemctl enable --now docker 2>/dev/null || true
+          docker --version
+          docker info >/dev/null
+
+      - name: Download and extract Fedora 44 container base
+        run: |
+          set -euo pipefail
+          # 优先使用 Fedora 官方 Quay 镜像，失败时回退 Docker Hub。
+          image="quay.io/fedora/fedora:${FEDORA_RELEASE}"
+          if ! docker pull --platform linux/arm64 "$image"; then
+            echo "::warning::拉取 $image 失败，改用 Docker Hub fedora:${FEDORA_RELEASE}"
+            image="docker.io/library/fedora:${FEDORA_RELEASE}"
+            docker pull --platform linux/arm64 "$image"
+          fi
+          cid="$(docker create --platform linux/arm64 "$image")"
+          cleanup() { docker rm -f "$cid" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          mkdir -p rootfs
+          # bsdtar 显式保留 ACL / xattr（file capabilities）；普通 tar 会丢。
+          docker export "$cid" | sudo bsdtar --acls --xattrs -xpf - -C rootfs
+          test -x rootfs/usr/bin/bash
+          # Fedora 44 的 dnf 可能是 dnf5 的别名。
+          test -x rootfs/usr/bin/dnf -o -x rootfs/usr/bin/dnf5
+          rm -f rootfs/.dockerenv
+          ls -ld rootfs rootfs/usr rootfs/etc
+
+      - name: Write Fedora rootfs setup script
+        run: |
+          set -euo pipefail
+          sudo mkdir -p rootfs/root
+          sudo tee rootfs/root/setup-fedora-rootfs.sh > /dev/null <<'EOS'
+          #!/bin/bash
+          set -euo pipefail
+
+          [ "$(uname -m)" = "aarch64" ] \
+            || { echo "::error::chroot 不是 arm64"; exit 1; }
+          echo "Fedora release: $(rpm -E %fedora)"
+
+          echo "=== [1/8] 配置 Fedora 44 软件源 ==="
+          # 容器 base 默认走 metalink；改用可直接访问的 HTTPS 镜像，
+          # 官方源作为最后兜底。$releasever/$basearch 由 dnf 展开。
+          repo_dir=/etc/yum.repos.d
+          for repo in "$repo_dir/fedora.repo" "$repo_dir/fedora-updates.repo" \
+                      "$repo_dir/fedora-updates-testing.repo"; do
+            [ -f "$repo" ] || continue
+            sed -i -E 's|^metalink=|#metalink=|' "$repo"
+          done
+          if [ -f "$repo_dir/fedora.repo" ]; then
+            # shellcheck disable=SC2016
+            sed -i '/^\[fedora\]/a baseurl=https://mirrors.tuna.tsinghua.edu.cn/fedora/releases/$releasever/Everything/$basearch/os/\n       https://mirrors.ustc.edu.cn/fedora/releases/$releasever/Everything/$basearch/os/\n       https://download.fedoraproject.org/pub/fedora/linux/releases/$releasever/Everything/$basearch/os/' \
+              "$repo_dir/fedora.repo"
+          fi
+          if [ -f "$repo_dir/fedora-updates.repo" ]; then
+            # 注意：这个文件里的 section 名是 [updates]，不是 [fedora-updates]。
+            # shellcheck disable=SC2016
+            sed -i '/^\[updates\]/a baseurl=https://mirrors.tuna.tsinghua.edu.cn/fedora/updates/$releasever/Everything/$basearch/\n       https://mirrors.ustc.edu.cn/fedora/updates/$releasever/Everything/$basearch/\n       https://download.fedoraproject.org/pub/fedora/linux/updates/$releasever/Everything/$basearch/' \
+              "$repo_dir/fedora-updates.repo"
+            # 不用 updates-testing，保证构建可重复（该 section 名是 [updates-testing]）。
+            sed -i '/^\[updates-testing\]/,/^\[/ s/^enabled=.*/enabled=0/' \
+              "$repo_dir/fedora-updates.repo"
+          fi
+          if [ -f "$repo_dir/fedora-updates-testing.repo" ]; then
+            sed -i '/^\[updates-testing\]/,/^\[/ s/^enabled=.*/enabled=0/' \
+              "$repo_dir/fedora-updates-testing.repo"
+          fi
+
+          # 不安装设备固件、内核和 initramfs 工具：
+          #   - phosh-desktop 组把 linux-firmware 列为 mandatory，这里跳过；
+          #   - hardware-support 组不安装，避免拉入各厂商 firmware；
+          #   - wireless-regdb 是唯一例外：NetworkManager-wifi 硬依赖它，且它只装
+          #     /usr/lib/firmware/regulatory.db{,.p7s} 两个监管数据库文件，不是设备固件；
+          #   - 内核/initramfs 由外部 boot 分区提供。
+          DNF=(dnf -y --setopt=install_weak_deps=False --setopt=keepcache=False \
+            --exclude='kernel*' \
+            --exclude='*firmware*' \
+            --exclude='b43-*' \
+            --exclude='dracut*')
+
+          echo "=== [2/8] 安装 Phosh 移动桌面组件 ==="
+          # 只装 Phosh 相关的组，不装完整 workstation/core 环境，
+          # 避免把服务器工具、SELinux 工具和设备固件带进手机 rootfs。
+          "${DNF[@]}" group install \
+            "multimedia" \
+            "networkmanager-submodules" \
+            "fonts" \
+            "input-methods"
+          if ! "${DNF[@]}" group install "phosh-desktop"; then
+            echo "::warning::Phosh 组安装失败，改为逐个安装移动桌面包"
+            # 列表覆盖 phosh-desktop 组的 mandatory/default 以及接口所需的运行时；
+            # 组安装被 linux-firmware 排除影响时仍能得到可用的手机桌面。
+            "${DNF[@]}" install \
+              phosh phoc phrog stevia stevia-phosh-osk-provider phosh-tour \
+              phosh-mobile-settings calls chatty gnome-contacts gnome-maps \
+              gnome-software epiphany gnome-calculator gnome-calendar \
+              gnome-clocks gnome-console gnome-photos pavucontrol showtime \
+              feedbackd pinentry-gnome3 NetworkManager NetworkManager-wifi \
+              NetworkManager-wwan NetworkManager-bluetooth wpa_supplicant \
+              NetworkManager-config-connectivity-fedora systemd-udev \
+              dnf5 dnf5-plugins sudo pipewire pipewire-pulseaudio \
+              wireplumber alsa-ucm mesa-dri-drivers mesa-vulkan-drivers \
+              systemd systemd-resolved dbus dbus-broker dbus-daemon chrony \
+              cryptsetup gstreamer1-plugin-libav gstreamer1-plugin-openh264 \
+              gstreamer1-plugin-dav1d gstreamer1-plugins-bad-free \
+              gstreamer1-plugins-good gstreamer1-plugins-ugly-free \
+              alsa-utils PackageKit-gstreamer-plugin \
+              pipewire-config-raop pipewire-gstreamer pipewire-utils
+          fi
+
+          echo "=== [3/8] 安装移动端应用与运行时 ==="
+          read -r -a fedora_pkgs <<< "$FEDORA_PACKAGES"
+          "${DNF[@]}" install "${fedora_pkgs[@]}"
+
+          echo "=== [4/8] 移除设备固件和内核残留 ==="
+          # 上面的 exclude 会跳过设备固件；这里再兜底删除任何被间接拉进来的包。
+          # wireless-regdb 不删：它是 NetworkManager-wifi 的硬依赖，而且只提供
+          # 监管数据库（regulatory.db / regulatory.db.p7s），不含设备固件。
+          mapfile -t fw_pkgs < <(rpm -qa --qf '%{NAME}\n' \
+            | grep -E '^linux-firmware|-firmware$' || true)
+          if [ "${#fw_pkgs[@]}" -gt 0 ]; then
+            # 注意这里不能带 --exclude='*firmware*'，否则 dnf 拒绝删除。
+            dnf -y remove "${fw_pkgs[@]}" || true
+          fi
+          # 清空固件目录，但保留 wireless-regdb 的两个监管数据库文件。
+          for fwdir in /lib/firmware /usr/lib/firmware; do
+            [ -d "$fwdir" ] || continue
+            find "$fwdir" -mindepth 1 -maxdepth 1 \
+              ! -name 'regulatory.db' ! -name 'regulatory.db.p7s' \
+              -exec rm -rf {} +
+          done
+          mkdir -p /usr/lib/firmware
+
+          mapfile -t kernel_pkgs < <(rpm -qa --qf '%{NAME}\n' \
+            | grep -E '^kernel(-(core|modules(-core|-extra)?|devel|headers))?$' || true)
+          if [ "${#kernel_pkgs[@]}" -gt 0 ]; then
+            echo "发现内核包，尝试移除：${kernel_pkgs[*]}"
+            dnf -y remove "${kernel_pkgs[@]}" || true
+          fi
+          mapfile -t kernel_pkgs < <(rpm -qa --qf '%{NAME}\n' \
+            | grep -E '^kernel(-(core|modules(-core|-extra)?|devel|headers))?$' || true)
+          if [ "${#kernel_pkgs[@]}" -gt 0 ]; then
+            echo "::error::rootfs 里仍然安装了内核包：${kernel_pkgs[*]}"
+            exit 1
+          fi
+          mkdir -p /usr/lib/modules
+          find /usr/lib/modules -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          mkdir -p /boot
+          find /boot -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+          # 不启用 SELinux：rootfs 不参与 Fedora 的 SELinux 重新标记。
+          if [ -f /etc/selinux/config ]; then
+            sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
+          fi
+          rm -f /.autorelabel
+
+          echo "=== [5/8] 基础系统配置 ==="
+          printf '%s\n' "$ROOTFS_HOSTNAME" > /etc/hostname
+          cat > /etc/hosts <<HOSTS_EOF
+          127.0.0.1       localhost
+          127.0.1.1       $ROOTFS_HOSTNAME
+          ::1             localhost ip6-localhost ip6-loopback
+          HOSTS_EOF
+
+          # init-rootfs.c 用 label "rootfs" 找根文件系统，fstab 也按 label 写。
+          cat > /etc/fstab <<'FSTAB_EOF'
+          # <device> <mount> <type> <options> <dump> <pass>
+          LABEL=rootfs  /  ext4  defaults,noatime,errors=remount-ro  0  1
+          FSTAB_EOF
+
+          printf 'LANG=en_US.UTF-8\n' > /etc/locale.conf
+          if [ -e /usr/share/zoneinfo/Asia/Shanghai ]; then
+            ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+            printf 'Asia/Shanghai\n' > /etc/timezone
+          fi
+
+          printf 'root:%s\n' "$ROOTFS_PASSWORD" | chpasswd
+
+          # 桌面用户加入 Fedora 的 wheel 以及手机常用设备组。
+          if ! id "$ROOTFS_DESKTOP_USER" >/dev/null 2>&1; then
+            useradd -m -s /bin/bash "$ROOTFS_DESKTOP_USER"
+          fi
+          for grp in wheel audio video input render bluetooth lp optical storage dialout plugdev; do
+            if getent group "$grp" >/dev/null; then
+              usermod -aG "$grp" "$ROOTFS_DESKTOP_USER"
+            fi
+          done
+          printf '%s:%s\n' "$ROOTFS_DESKTOP_USER" \
+            "${ROOTFS_DESKTOP_PASSWORD:-$ROOTFS_PASSWORD}" | chpasswd
+          install -d -m 750 /etc/sudoers.d
+          printf '%%wheel ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/10-wheel
+          chmod 440 /etc/sudoers.d/10-wheel
+
+          # 触摸登录器 phrog 以 greetd 用户运行 phoc，补上 DRM/输入设备权限。
+          id greetd >/dev/null 2>&1 \
+            || { echo "::error::greetd 用户不存在，phrog 触摸登录器无法启动"; exit 1; }
+          for grp in video render input; do
+            if getent group "$grp" >/dev/null; then
+              usermod -aG "$grp" greetd
+            fi
+          done
+
+          if rpm -q openssh-server >/dev/null 2>&1; then
+            sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+            sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+            # 首次开机由 sshd-keygen.target 生成唯一 host key。
+            rm -f /etc/ssh/ssh_host_*
+            systemctl enable sshd.service 2>/dev/null || echo "WARNING: cannot enable sshd.service"
+          fi
+
+          # NetworkManager 走 systemd-resolved 管 DNS。
+          mkdir -p /etc/NetworkManager/conf.d
+          printf '[main]\ndns=systemd-resolved\n' > /etc/NetworkManager/conf.d/dns.conf
+
+          for svc in NetworkManager systemd-resolved chronyd bluetooth ModemManager iio-sensor-proxy; do
+            systemctl enable "$svc" 2>/dev/null || echo "WARNING: cannot enable $svc"
+          done
+          # 系统总线由 dbus.socket 激活；container base 不会替我们 enable。
+          systemctl enable dbus.socket 2>/dev/null \
+            || { echo "::error::无法启用 dbus.socket"; exit 1; }
+          # /etc/machine-id 缺失时 systemd-firstboot 会交互式提问，必须屏蔽。
+          systemctl mask systemd-firstboot.service 2>/dev/null \
+            || { echo "::error::无法屏蔽 systemd-firstboot.service"; exit 1; }
+          systemctl enable serial-getty@ttyS0.service 2>/dev/null || true
+
+          echo "=== [6/8] 配置 Phosh 手机登录与图形会话 ==="
+          # phrog.service 带 Alias=display-manager.service，是触摸友好的
+          # Phosh/greetd 登录器；登录后进入 phosh.desktop 手机会话。
+          systemctl disable getty@tty1.service 2>/dev/null || true
+          # greetd 包自带的 greetd.service 也是 display-manager，避免两个登录器并存。
+          systemctl disable greetd.service 2>/dev/null || true
+          if ! systemctl enable phrog.service 2>/dev/null; then
+            echo "::error::无法启用 phrog.service，Phosh 手机登录器不可用"
+            exit 1
+          fi
+          systemctl set-default graphical.target \
+            || ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target
+
+          ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+
+          # 让每台设备首次开机生成唯一 machine-id（文件缺失才是首次开机）。
+          rm -f /etc/machine-id
+          rm -f /var/lib/systemd/random-seed
+
+          echo "=== [7/8] 记录版本并清理 ==="
+          rpm -q phosh phoc phrog stevia > /root/fedora-phosh-version.txt
+
+          "${DNF[@]}" clean all || true
+          rm -rf /var/cache/dnf/* /var/cache/libdnf5/* /var/log/journal/*
+          find /var/log -type f -exec truncate -s 0 {} + 2>/dev/null || true
+          rm -rf /tmp/* /var/tmp/*
+
+          echo "=== [8/8] Fedora 44 + Phosh rootfs 准备完成 ==="
+          EOS
+          sudo chmod +x rootfs/root/setup-fedora-rootfs.sh
+
+      - name: Configure Fedora rootfs in native aarch64 chroot
+        run: |
+          set -euo pipefail
+          # runner 本身是 aarch64，chroot 可直接执行 Fedora arm64 的二进制。
+          sudo rm -f rootfs/etc/resolv.conf
+          sudo cp /etc/resolv.conf rootfs/etc/resolv.conf
+          # 宿主机若用 systemd-resolved stub，chroot 里没有该服务，换公共 DNS。
+          if grep -q '^nameserver 127\.0\.0\.53' rootfs/etc/resolv.conf; then
+            echo "chroot 内无 systemd-resolved，改用公共 DNS"
+            printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' | sudo tee rootfs/etc/resolv.conf > /dev/null
+          fi
+          sudo mkdir -p rootfs/proc rootfs/sys rootfs/dev/pts
+
+          cleanup() {
+            sudo umount -lf rootfs/dev/pts 2>/dev/null || true
+            sudo umount -lf rootfs/dev     2>/dev/null || true
+            sudo umount -lf rootfs/proc    2>/dev/null || true
+            sudo umount -lf rootfs/sys     2>/dev/null || true
+            sudo umount -lf rootfs         2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          # 和 Arch/Ubuntu job 一样：把 rootfs bind 到自身，避免 dnf/rpm
+          # 的挂载点检查误判；proc/sys/dev 提供 chroot 内基本环境。
+          sudo mount --bind rootfs rootfs
+          sudo mount -t proc  proc  rootfs/proc
+          sudo mount -t sysfs sysfs rootfs/sys
+          sudo mount --bind /dev rootfs/dev
+          sudo mount --bind /dev/pts rootfs/dev/pts
+
+          sudo chroot rootfs /usr/bin/env -i \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/root \
+            LANG=C \
+            SYSTEMD_OFFLINE=1 \
+            ROOTFS_HOSTNAME="$ROOTFS_HOSTNAME" \
+            ROOTFS_PASSWORD="$ROOT_PASSWORD" \
+            ROOTFS_DESKTOP_USER="$FEDORA_DESKTOP_USER" \
+            ROOTFS_DESKTOP_PASSWORD="${DESKTOP_PASSWORD:-$ROOT_PASSWORD}" \
+            FEDORA_PACKAGES="$FEDORA_PACKAGES" \
+            /bin/bash /root/setup-fedora-rootfs.sh
+
+          cleanup
+          trap - EXIT
+
+      - name: Clean chroot artifacts and remove all kernel modules
+        run: |
+          set -euo pipefail
+          sudo umount -lf rootfs/dev/pts 2>/dev/null || true
+          sudo umount -lf rootfs/dev     2>/dev/null || true
+          sudo umount -lf rootfs/proc    2>/dev/null || true
+          sudo umount -lf rootfs/sys     2>/dev/null || true
+
+          # 防止后面 rsync/mkfs 把宿主机 /proc /sys /dev 抄进镜像。
+          for d in proc sys dev dev/pts; do
+            if mountpoint -q "rootfs/$d"; then
+              echo "::error::rootfs/$d 仍然挂载着，不能打进镜像"
+              exit 1
+            fi
+          done
+
+          sudo rm -f rootfs/root/setup-fedora-rootfs.sh
+
+          # 本工作流明确不安装内核模块；清空 /lib/modules（以及 usrmerge 下的
+          # /usr/lib/modules），保留空目录。
+          for d in rootfs/lib/modules rootfs/usr/lib/modules; do
+            sudo mkdir -p "$d"
+            sudo find "$d" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          done
+
+          # rootfs 的 /boot 由外部 boot 分区提供，清掉可能残留的 kernel/initramfs。
+          sudo mkdir -p rootfs/boot
+          sudo find rootfs/boot -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+          # 确认没有把发行版内核带进来。先完整取出包列表：如果 rpm 本身失败，
+          # set -e 会立即失败，而不是让 grep 的“无匹配”掩盖 chroot 错误。
+          installed_pkgs="$(sudo chroot rootfs /usr/bin/rpm -qa --qf '%{NAME}\n')"
+          if grep -Eq '^kernel(-(core|modules(-core|-extra)?|devel|headers))?$' <<< "$installed_pkgs"; then
+            echo "::error::rootfs 里仍然安装了内核包"
+            exit 1
+          fi
+          if [ -n "$(find rootfs/boot -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+            echo "::error::rootfs/boot 不是空的，仍有 kernel/initramfs 残留"
+            exit 1
+          fi
+
+      - name: Verify Fedora rootfs
+        run: |
+          set -euo pipefail
+          if [ ! -e rootfs/sbin/init ] && [ ! -L rootfs/sbin/init ] && [ -e rootfs/usr/lib/systemd/systemd ]; then
+            echo "WARNING: /sbin/init 缺失，补一个到 systemd 的软链接"
+            sudo mkdir -p rootfs/sbin
+            sudo ln -sf /usr/lib/systemd/systemd rootfs/sbin/init
+          fi
+          { [ -e rootfs/sbin/init ] || [ -L rootfs/sbin/init ]; } \
+            || { echo "::error::rootfs 里没有 /sbin/init"; exit 1; }
+          test -e rootfs/usr/lib/systemd/systemd
+          test -x rootfs/usr/bin/systemctl
+          init_target="$(readlink rootfs/sbin/init || true)"
+          case "$init_target" in
+            *systemd*) echo "/sbin/init -> $init_target" ;;
+            *) echo "::error::/sbin/init 未指向 systemd：$init_target"; exit 1 ;;
+          esac
+          test -f rootfs/etc/fstab
+          grep -q '^LABEL=rootfs' rootfs/etc/fstab
+          test -f rootfs/etc/hostname
+          test -f rootfs/etc/hosts
+
+          # 不安装设备固件：除 wireless-regdb 的监管数据库外，不允许固件包或固件文件。
+          # wireless-regdb 是 NetworkManager-wifi 的硬依赖，只有 regulatory.db{,.p7s}。
+          installed_pkgs="$(sudo chroot rootfs /usr/bin/rpm -qa --qf '%{NAME}\n')"
+          if grep -Eq '^linux-firmware|-firmware$' <<< "$installed_pkgs"; then
+            echo "::error::rootfs 里仍然安装了设备固件包"
+            exit 1
+          fi
+          grep -qx 'wireless-regdb' <<< "$installed_pkgs" \
+            || { echo "::error::缺少 wireless-regdb（NetworkManager-wifi 依赖）"; exit 1; }
+          grep -qx 'NetworkManager-wifi' <<< "$installed_pkgs" \
+            || { echo "::error::缺少 NetworkManager-wifi"; exit 1; }
+          test -f rootfs/usr/lib/firmware/regulatory.db \
+            || { echo "::error::缺少 regulatory.db"; exit 1; }
+          test -f rootfs/usr/lib/firmware/regulatory.db.p7s \
+            || { echo "::error::缺少 regulatory.db.p7s"; exit 1; }
+          for d in rootfs/lib/firmware rootfs/usr/lib/firmware; do
+            [ -d "$d" ] || continue
+            unexpected="$(find "$d" -mindepth 1 -maxdepth 1 \
+              ! -name 'regulatory.db' ! -name 'regulatory.db.p7s' -print -quit)"
+            if [ -n "$unexpected" ]; then
+              echo "::error::$d 里有设备固件文件：$unexpected"
+              exit 1
+            fi
+          done
+          for d in rootfs/lib/modules rootfs/usr/lib/modules; do
+            if [ -d "$d" ] && [ -n "$(find "$d" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+              echo "::error::$d 不是空的，本工作流不应安装内核模块"
+              exit 1
+            fi
+          done
+
+          # Phosh 手机桌面：shell、合成器、触摸登录器、屏幕键盘必须齐全。
+          test -x rootfs/usr/bin/phosh-session
+          test -x rootfs/usr/bin/phoc
+          test -x rootfs/usr/bin/phrog
+          test -f rootfs/usr/share/wayland-sessions/phosh.desktop \
+            || { echo "::error::缺少 Phosh Wayland 会话文件"; exit 1; }
+          test -f rootfs/usr/share/gnome-session/sessions/phosh.session
+          test -f rootfs/usr/lib/systemd/system/phrog.service
+          test -f rootfs/root/fedora-phosh-version.txt
+          cat rootfs/root/fedora-phosh-version.txt
+          grep -q '^phosh-' rootfs/root/fedora-phosh-version.txt \
+            || { echo "::error::Phosh 未正确安装"; exit 1; }
+
+          test -L rootfs/etc/systemd/system/display-manager.service \
+            || { echo "::error::display-manager.service 未启用"; exit 1; }
+          readlink rootfs/etc/systemd/system/display-manager.service | grep -q 'phrog.service' \
+            || { echo "::error::display-manager.service 不是 phrog"; exit 1; }
+          readlink rootfs/etc/systemd/system/default.target | grep -q 'graphical.target' \
+            || { echo "::error::默认 systemd target 不是 graphical.target"; exit 1; }
+
+          grep -q "^${FEDORA_DESKTOP_USER}:" rootfs/etc/passwd \
+            || { echo "::error::桌面用户 ${FEDORA_DESKTOP_USER} 不存在"; exit 1; }
+          test -d "rootfs/home/${FEDORA_DESKTOP_USER}" \
+            || { echo "::error::桌面用户 ${FEDORA_DESKTOP_USER} 的 home 不存在"; exit 1; }
+          sudo grep -q '^%wheel ALL=(ALL:ALL) ALL$' rootfs/etc/sudoers.d/10-wheel \
+            || { echo "::error::wheel sudo 配置缺失"; exit 1; }
+          wheel_members="$(awk -F: '$1=="wheel"{print $4}' rootfs/etc/group)"
+          case ",$wheel_members," in
+            *",$FEDORA_DESKTOP_USER,"*) echo "wheel group: $FEDORA_DESKTOP_USER" ;;
+            *) echo "::error::桌面用户不在 wheel 组"; exit 1 ;;
+          esac
+
+          if [ -L rootfs/etc/systemd/system/multi-user.target.wants/sshd.service ] \
+            || [ -L rootfs/etc/systemd/system/multi-user.target.wants/sshd.socket ]; then
+            echo "ssh enabled"
+          else
+            echo "WARNING: ssh 未设置开机自启"
+          fi
+          test -L rootfs/etc/systemd/system/multi-user.target.wants/NetworkManager.service \
+            || echo "WARNING: NetworkManager 未设置开机自启"
+          test -L rootfs/etc/systemd/system/sockets.target.wants/dbus.socket \
+            || { echo "::error::dbus.socket 未启用"; exit 1; }
+          test -L rootfs/etc/systemd/system/systemd-firstboot.service \
+            || { echo "::error::systemd-firstboot.service 未屏蔽"; exit 1; }
+          test "$(readlink rootfs/etc/systemd/system/systemd-firstboot.service)" = "/dev/null" \
+            || { echo "::error::systemd-firstboot.service 未 mask 到 /dev/null"; exit 1; }
+          grep -q '^greetd:' rootfs/etc/passwd \
+            || { echo "::error::greetd 用户不存在"; exit 1; }
+
+          # 版本信息留给 job summary，然后从最终镜像里删掉。
+          cp rootfs/root/fedora-phosh-version.txt fedora-phosh-version.txt
+          sudo rm -f rootfs/root/fedora-phosh-version.txt
+          echo "--- /sbin/init ---"
+          ls -l rootfs/sbin/init
+          echo "--- modules ---"
+          ls -la rootfs/usr/lib/modules
+
+      - name: Create ext4 image (loop mount with mkfs -d fallback)
+        run: |
+          set -euo pipefail
+          MNT=/mnt/fedora-rootfs-img
+          cleanup() {
+            sudo umount -lf "$MNT" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          truncate -s "${FEDORA_ROOTFS_SIZE^^}" fedora-rootfs.img
+          sudo mkfs.ext4 -F -L "$ROOTFS_LABEL" fedora-rootfs.img
+
+          sudo mkdir -p "$MNT"
+          used_loop=0
+          if sudo mount -o loop fedora-rootfs.img "$MNT"; then
+            # rsync 保留 xattr / capabilities / ACL / 设备节点；
+            # mkfs.ext4 -d 在部分 e2fsprogs 上会丢 capabilities。
+            if sudo rsync -aHAX --numeric-ids rootfs/ "$MNT/"; then
+              sync
+              sudo umount "$MNT"
+              used_loop=1
+            else
+              echo "::warning::rsync 到 loop 镜像失败，回退到 mkfs.ext4 -d"
+              sudo umount -lf "$MNT" 2>/dev/null || true
+            fi
+          fi
+          if [ "$used_loop" -ne 1 ]; then
+            if mountpoint -q "$MNT"; then
+              echo "::error::$MNT 仍然挂载，拒绝在已挂载的镜像上重新 mkfs"
+              exit 1
+            fi
+            echo "loop mount 不可用或 rsync 失败，回退到 mkfs.ext4 -d"
+            sudo mkfs.ext4 -F -L "$ROOTFS_LABEL" -d rootfs fedora-rootfs.img
+          fi
+          cleanup
+          trap - EXIT
+          sudo rmdir "$MNT" 2>/dev/null || true
+
+          set +e
+          sudo e2fsck -fy fedora-rootfs.img
+          e2fsck_rc=$?
+          set -e
+          # 0=无错误，1/2=已修复（2 只是建议重启）；>=4 表示仍有未修复错误。
+          if [ "$e2fsck_rc" -ge 4 ]; then
+            echo "::error::e2fsck 返回 $e2fsck_rc，文件系统存在未修复错误"
+            exit 1
+          fi
+          sudo tune2fs -L "$ROOTFS_LABEL" fedora-rootfs.img
+          sudo dumpe2fs -h fedora-rootfs.img | grep -E \
+            'Filesystem volume name|Filesystem UUID|Block count|Block size'
+
+          # 内容已经写进 fedora-rootfs.img，删除源目录释放 runner 磁盘。
+          sudo rm -rf rootfs
+
+          img2simg fedora-rootfs.img fedora-rootfs-sparse.img
+          sha256sum fedora-rootfs-sparse.img | tee fedora-rootfs-sparse.img.sha256
+          ls -lh fedora-rootfs.img fedora-rootfs-sparse.img
+          du -h fedora-rootfs.img fedora-rootfs-sparse.img
+
+      - name: Upload Fedora 44 ARM64 rootfs (sparse)
+        uses: actions/upload-artifact@v4
+        with:
+          name: fedora-44-rootfs
+          path: |
+            fedora-rootfs-sparse.img
+            fedora-rootfs-sparse.img.sha256
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload raw fedora-rootfs.img
+        if: ${{ github.event.inputs.UPLOAD_RAW_IMG == 'true' || github.event.inputs.UPLOAD_RAW_IMG == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fedora-44-rootfs-raw
+          path: fedora-rootfs.img
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Write job summary
+        run: |
+          {
+            echo "## Fedora 44 ARM64 rootfs (Phosh)"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|------|----|"
+            echo "| 构建环境 | GitHub 原生 arm64（\`ubuntu-24.04-arm\`） |"
+            echo "| 发行版 | Fedora Linux 44（aarch64） |"
+            echo "| 桌面环境 | Phosh 手机 shell + phrog 触摸登录器 + Stevia 屏幕键盘 |"
+            echo "| 桌面用户 | \`$FEDORA_DESKTOP_USER\` |"
+            echo "| 镜像大小 | \`$FEDORA_ROOTFS_SIZE\` |"
+            echo "| ext4 label | \`$ROOTFS_LABEL\` |"
+            echo "| 主机名 | \`$ROOTFS_HOSTNAME\` |"
+            echo "| 移动端适配 | 手机布局 + OSK + 触摸登录 + 自动旋转（iio-sensor-proxy）+ 电话短信（ModemManager/calls/chatty） |"
+            echo "| 固件 | 未安装设备固件；仅保留 wireless-regdb 监管数据库（NetworkManager-wifi 依赖） |"
+            echo "| 内核模块 | 未安装（按设计） |"
+            echo ""
+            echo '```'
+            cat fedora-phosh-version.txt
+            ls -lh fedora-rootfs.img fedora-rootfs-sparse.img
+            echo '```'
+            echo ""
+            echo "刷写：把 \`fedora-rootfs-sparse.img\` 刷到 GPT 名为 \`rootfs\` 的分区，"
+            echo "或 \`fastboot flash <rootfs 分区> fedora-rootfs-sparse.img\`。"
+            echo ""
+            echo "登录界面由 phrog（Phosh + greetd）提供，登录后进入 Phosh 手机会话。"
           } >> "$GITHUB_STEP_SUMMARY"
