@@ -1,16 +1,20 @@
 name: build-kernel-and-rootfs
 
 # =============================================================================
-# 内核 + Arch Linux ARM64 rootfs 构建。
+# 内核 + Arch Linux ARM64 / Ubuntu 26.10 ARM64 rootfs 构建。
 #
-# 本文件的 rootfs job 只做 rootfs：
+# 本文件有两个 rootfs job，都只做 rootfs：
 #   - 在 GitHub 原生 arm64 Ubuntu runner（ubuntu-24.04-arm）上构建，
-#     Arch Linux ARM aarch64 直接 chroot，不需要 qemu-user-static/binfmt；
+#     直接 chroot，不需要 qemu-user-static/binfmt；
 #   - 不安装任何固件包（含 linux-firmware），也不编译/安装内核模块、不跑 depmod；
-#   - rootfs 的 /boot 也清空，内核/initramfs 由外部 boot 分区提供；
-#   - 默认安装 KDE Plasma Mobile（plasma-mobile + Plasma Login Manager），
+#   - rootfs 的 /boot 都清空，内核/initramfs 由外部 boot 分区提供；
+#   - Arch job 默认安装 KDE Plasma Mobile（plasma-mobile + Plasma Login Manager），
 #     可用 INSTALL_KDE=false 回到 headless；
-#   - 目前只做 Arch Linux ARM aarch64，后续可照这个 job 加别的发行版。
+#   - Ubuntu job 安装 Ubuntu 26.10 arm64 + GNOME Shell Mobile：
+#     Ubuntu 仓库里没有 gnome-shell-mobile，这个 job 会从 GNOME GitLab
+#     （verdre/{mutter,gnome-settings-daemon,gnome-shell}-mobile）按 tag
+#     源码构建，并覆盖发行版的 mutter / gnome-settings-daemon / gnome-shell；
+#     安装 iio-sensor-proxy（自动旋转）、ModemManager（蜂窝网络）等移动端组件。
 #   - 只支持手动 workflow_dispatch 触发，push 不再触发构建。
 #
 # rootfs 的关键约定（来自 init-rootfs.c）：
@@ -28,12 +32,18 @@ on:
         type: choice
         options:
           - "仅RootFS"
+          - "仅Ubuntu"
           - "仅内核"
           - "全部"
       ROOTFS_SIZE:
         description: "rootfs 镜像大小（Plasma Mobile 建议 5G）"
         required: true
         default: "5G"
+        type: string
+      UBUNTU_ROOTFS_SIZE:
+        description: "Ubuntu rootfs 镜像大小（GNOME Shell Mobile 建议 6G）"
+        required: true
+        default: "6G"
         type: string
       ROOTFS_HOSTNAME:
         description: "rootfs 主机名"
@@ -65,10 +75,25 @@ on:
         required: false
         default: ""
         type: string
+      UBUNTU_DESKTOP_USER:
+        description: "Ubuntu rootfs 桌面用户名"
+        required: false
+        default: "ubuntu"
+        type: string
       EXTRA_PACKAGES:
         description: "额外安装的 Arch 包（空格分隔）"
         required: false
         default: "networkmanager wpa_supplicant iwd openssh sudo vim less curl wget ca-certificates htop bluez bluez-utils iw tzdata"
+        type: string
+      UBUNTU_PACKAGES:
+        description: "Ubuntu rootfs 安装的包（空格分隔；GNOME Shell Mobile + 移动端应用）"
+        required: false
+        default: "systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus dbus-user-session libpam-systemd libnss-systemd gnome-session gnome-shell gdm3 gnome-settings-daemon gnome-control-center gnome-bluetooth-sendto gnome-keyring network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 callaudiod feedbackd pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2"
+        type: string
+      GNOME_MOBILE_TAG:
+        description: "GNOME Shell Mobile 源码 tag（mutter / gsd / shell 三个仓库一致）"
+        required: false
+        default: "51.1.mobile.3"
         type: string
       UPLOAD_RAW_IMG:
         description: "同时上传未压缩的 rootfs.img（体积大）"
@@ -90,6 +115,13 @@ env:
   # os.archlinuxarm.org 的 HTTPS 证书当前与域名不匹配，改用可信 HTTPS 镜像。
   ALARM_TARBALL: https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm/os/ArchLinuxARM-aarch64-latest.tar.gz
   ALARM_TARBALL_FALLBACK: https://mirrors.ustc.edu.cn/archlinuxarm/os/ArchLinuxARM-aarch64-latest.tar.gz
+  # Ubuntu 26.10 (Stonking Stingray) arm64 base rootfs；arm64 走 ports 仓库。
+  UBUNTU_BASE_TARBALL: https://cdimage.ubuntu.com/ubuntu-base/releases/26.10/release/ubuntu-base-26.10-base-arm64.tar.gz
+  UBUNTU_BASE_TARBALL_FALLBACK: https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cdimage/ubuntu-base/releases/26.10/release/ubuntu-base-26.10-base-arm64.tar.gz
+  UBUNTU_BASE_TARBALL_SHA256: 8b7ea4ed71a92873f7f4e260a3defe0d9ed85cb69c0155b12414208f79fa0f2d
+  UBUNTU_SUITE: stonking
+  # GNOME Shell Mobile（手机适配的 GNOME Shell fork），Ubuntu 仓库里没有。
+  GNOME_MOBILE_GITLAB: https://gitlab.gnome.org/verdre
 
 jobs:
   # ==========================================================
@@ -668,4 +700,660 @@ jobs:
             echo ""
             echo "刷写：把 \`archlinux-rootfs-sparse.img\` 刷到 GPT 名为 \`rootfs\` 的分区，"
             echo "或 \`fastboot flash <rootfs 分区> archlinux-rootfs-sparse.img\`。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ==========================================================
+  # Job 3：Ubuntu 26.10 ARM64 rootfs（GNOME Shell Mobile，移动端适配）
+  # 独立于内核和 Arch rootfs；不安装固件和内核模块。
+  # Ubuntu 仓库没有 gnome-shell-mobile，本 job 从 GNOME GitLab
+  # （verdre/{mutter,gnome-settings-daemon,gnome-shell}-mobile）
+  # 按固定 tag 源码构建，覆盖发行版对应组件：
+  #   - gnome-shell-mobile：mobile 布局 + 手机 OSK 键盘；
+  #   - mutter-mobile：移动端手势/旋屏；
+  #   - gnome-settings-daemon-mobile：移动端 GSD 插件；
+  #   - iio-sensor-proxy 自动旋转、ModemManager/chatty/gnome-calls 电话短信。
+  # ==========================================================
+  ubuntu-rootfs:
+    name: build Ubuntu 26.10 ARM64 rootfs (GNOME Shell Mobile)
+    if: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.TASK == '全部' || github.event.inputs.TASK == '仅Ubuntu') }}
+    # rootfs 用原生 arm64 runner，源码构建 mutter/gsd/shell 不需要 qemu。
+    runs-on: ubuntu-24.04-arm
+    # apt 装包 + 三个 GNOME 组件源码构建，留足时间。
+    timeout-minutes: 300
+
+    env:
+      UBUNTU_ROOTFS_SIZE: ${{ github.event.inputs.UBUNTU_ROOTFS_SIZE || '6G' }}
+      ROOTFS_HOSTNAME: ${{ github.event.inputs.ROOTFS_HOSTNAME || 'rmx6688' }}
+      ROOT_PASSWORD: ${{ github.event.inputs.ROOT_PASSWORD || '1234' }}
+      UBUNTU_DESKTOP_USER: ${{ github.event.inputs.UBUNTU_DESKTOP_USER || 'ubuntu' }}
+      DESKTOP_PASSWORD: ${{ github.event.inputs.DESKTOP_PASSWORD || '' }}
+      UBUNTU_PACKAGES: ${{ github.event.inputs.UBUNTU_PACKAGES || 'systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus dbus-user-session libpam-systemd libnss-systemd gnome-session gnome-shell gdm3 gnome-settings-daemon gnome-control-center gnome-bluetooth-sendto gnome-keyring network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 callaudiod feedbackd pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2' }}
+      GNOME_MOBILE_TAG: ${{ github.event.inputs.GNOME_MOBILE_TAG || '51.1.mobile.3' }}
+      # init-rootfs.c 用 ext4 label "rootfs" 作为 UUID 失配后的兜底，不要随便改。
+      ROOTFS_LABEL: rootfs
+
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          # 这个 job 固定用原生 arm64 runner；若 runner 被改回 x86_64，尽早报错。
+          if [ "$(uname -m)" != "aarch64" ]; then
+            echo "::error::ubuntu-rootfs job 必须在原生 aarch64 runner 上运行，当前架构：$(uname -m)"
+            exit 1
+          fi
+          if ! [[ "$UBUNTU_ROOTFS_SIZE" =~ ^[0-9]+[GgMm]$ ]]; then
+            echo "::error::UBUNTU_ROOTFS_SIZE 必须是类似 6G / 5120M 的值，当前：$UBUNTU_ROOTFS_SIZE"
+            exit 1
+          fi
+          if ! [[ "$ROOTFS_HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
+            echo "::error::ROOTFS_HOSTNAME 不是合法主机名：$ROOTFS_HOSTNAME"
+            exit 1
+          fi
+          test -n "$ROOT_PASSWORD" || { echo "::error::ROOT_PASSWORD 不能为空"; exit 1; }
+          case "$ROOT_PASSWORD" in
+            *:*) echo "::error::ROOT_PASSWORD 不能包含冒号"; exit 1 ;;
+          esac
+          if ! [[ "$UBUNTU_DESKTOP_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+            echo "::error::UBUNTU_DESKTOP_USER 不是合法用户名：$UBUNTU_DESKTOP_USER"
+            exit 1
+          fi
+          if [ "$UBUNTU_DESKTOP_USER" = "root" ]; then
+            echo "::error::UBUNTU_DESKTOP_USER 不能是 root（GDM 不允许 root 图形会话）"
+            exit 1
+          fi
+          case "$DESKTOP_PASSWORD" in
+            *:*) echo "::error::DESKTOP_PASSWORD 不能包含冒号"; exit 1 ;;
+          esac
+          test -n "$UBUNTU_PACKAGES" || { echo "::error::UBUNTU_PACKAGES 不能为空"; exit 1; }
+          if ! [[ "$GNOME_MOBILE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::GNOME_MOBILE_TAG 不合法：$GNOME_MOBILE_TAG"
+            exit 1
+          fi
+          # 提前确认三个仓库都有这个 tag，避免装完包才在编译阶段失败。
+          for repo in mutter-mobile gnome-settings-daemon-mobile gnome-shell-mobile; do
+            git ls-remote --exit-code --tags "$GNOME_MOBILE_GITLAB/$repo.git" "refs/tags/$GNOME_MOBILE_TAG" >/dev/null \
+              || { echo "::error::$repo 缺少 tag $GNOME_MOBILE_TAG"; exit 1; }
+          done
+          echo "ubuntu rootfs: size=$UBUNTU_ROOTFS_SIZE hostname=$ROOTFS_HOSTNAME label=$ROOTFS_LABEL"
+          echo "gnome shell mobile tag: $GNOME_MOBILE_TAG"
+          echo "desktop user: $UBUNTU_DESKTOP_USER"
+          echo "packages: $UBUNTU_PACKAGES"
+
+      - name: Free runner disk for Ubuntu rootfs
+        run: |
+          set -euo pipefail
+          # GitHub runner 预装的 Android SDK / .NET / GHC 等与本构建无关；
+          # Ubuntu GNOME rootfs + 源码编译需要更多可用空间。
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            /opt/az \
+            /usr/local/.ghcup \
+            /usr/lib/jvm \
+            /usr/local/share/chromium \
+            /opt/microsoft \
+            /opt/google
+          sudo apt-get clean
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            wget curl git ca-certificates \
+            e2fsprogs util-linux rsync \
+            libarchive-tools android-sdk-libsparse-utils
+          bsdtar --version
+          img2simg 2>&1 | head -1 || true
+
+      - name: Download and extract Ubuntu 26.10 arm64 base
+        run: |
+          set -euo pipefail
+          wget -q --show-progress --tries=3 --timeout=60 -O ubuntu-base-26.10-arm64.tar.gz "$UBUNTU_BASE_TARBALL" \
+            || wget -q --show-progress --tries=3 --timeout=60 -O ubuntu-base-26.10-arm64.tar.gz "$UBUNTU_BASE_TARBALL_FALLBACK"
+          echo "$UBUNTU_BASE_TARBALL_SHA256  ubuntu-base-26.10-arm64.tar.gz" | sha256sum -c -
+          mkdir -p rootfs
+          # bsdtar 显式保留 ACL / xattr（file capabilities）；普通 tar 会丢。
+          sudo bsdtar --acls --xattrs -xpf ubuntu-base-26.10-arm64.tar.gz -C rootfs
+          test -x rootfs/bin/bash
+          rm -f ubuntu-base-26.10-arm64.tar.gz
+          ls -ld rootfs rootfs/usr rootfs/etc
+
+      - name: Write Ubuntu rootfs setup script
+        run: |
+          set -euo pipefail
+          sudo mkdir -p rootfs/root
+          sudo tee rootfs/root/setup-ubuntu-rootfs.sh > /dev/null <<'EOS'
+          #!/bin/bash
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          export APT_LISTCHANGES_FRONTEND=none
+
+          [ "$(dpkg --print-architecture)" = "arm64" ] \
+            || { echo "::error::chroot 不是 arm64"; exit 1; }
+
+          echo "=== [1/9] 配置 Ubuntu apt 源（arm64 ports + deb-src） ==="
+          cat > /etc/apt/sources.list.d/ubuntu.sources <<EOF
+          Types: deb deb-src
+          URIs: http://ports.ubuntu.com/ubuntu-ports
+          Suites: ${UBUNTU_SUITE} ${UBUNTU_SUITE}-updates ${UBUNTU_SUITE}-security
+          Components: main restricted universe multiverse
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+          rm -f /etc/apt/sources.list
+
+          # chroot 里没有运行中的 systemd，禁止安装包时尝试启动服务。
+          printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+          chmod 755 /usr/sbin/policy-rc.d
+
+          apt-get update
+
+          echo "=== [2/9] 安装 GNOME Shell Mobile 运行所需软件包 ==="
+          # ubuntu-base 只带 libsystemd0，没有 systemd / systemctl / /sbin/init，
+          # 必须显式安装 systemd + systemd-sysv，否则镜像无法启动。
+          read -r -a ubuntu_pkgs <<< "$ROOTFS_PACKAGES"
+          apt-get install -y --no-install-recommends "${ubuntu_pkgs[@]}"
+
+          echo "=== [3/9] 安装构建依赖（mutter / gnome-shell / gnome-settings-daemon） ==="
+          dpkg-query -W -f='${binary:Package}\n' | sort -u > /root/pkgs-before-build.txt
+          apt-get install -y --no-install-recommends git meson ninja-build
+          apt-get -o APT::Get::Build-Dep-Automatic=true build-dep -y \
+            mutter gnome-shell gnome-settings-daemon
+          dpkg-query -W -f='${binary:Package}\n' | sort -u > /root/pkgs-after-build.txt
+          comm -13 /root/pkgs-before-build.txt /root/pkgs-after-build.txt > /root/build-deps.list
+          echo "构建期新增包数量：$(wc -l < /root/build-deps.list)"
+
+          echo "=== [4/9] 源码构建并安装 mutter-mobile（移动端手势/旋屏） ==="
+          mkdir -p /root/src
+          cd /root/src
+          git clone --depth 1 --branch "$GNOME_MOBILE_TAG" \
+            "${GNOME_MOBILE_GITLAB}/mutter-mobile.git"
+          cd mutter-mobile
+          meson setup build --prefix=/usr --libdir=lib/aarch64-linux-gnu --buildtype=release \
+            -Dstrip=true -Dcogl_tests=false -Dclutter_tests=false -Dmutter_tests=false -Ddocs=false
+          ninja -C build
+          ninja -C build install
+          ldconfig
+          cd /root/src
+
+          echo "=== [5/9] 源码构建并安装 gnome-settings-daemon-mobile ==="
+          git clone --depth 1 --branch "$GNOME_MOBILE_TAG" \
+            "${GNOME_MOBILE_GITLAB}/gnome-settings-daemon-mobile.git"
+          cd gnome-settings-daemon-mobile
+          meson setup build --prefix=/usr --libdir=lib/aarch64-linux-gnu --buildtype=release \
+            -Dstrip=true -Dsystemd=true -Dsystemd-units=true -Dcups=false
+          ninja -C build
+          ninja -C build install
+          ldconfig
+          cd /root/src
+
+          echo "=== [6/9] 源码构建并安装 gnome-shell-mobile（手机 shell） ==="
+          git clone --depth 1 --branch "$GNOME_MOBILE_TAG" \
+            "${GNOME_MOBILE_GITLAB}/gnome-shell-mobile.git"
+          cd gnome-shell-mobile
+          meson setup build --prefix=/usr --libdir=lib/aarch64-linux-gnu --buildtype=release \
+            -Dstrip=true -Dtests=false -Dgtk_doc=false -Dman=false -Dextensions_tool=true \
+            -Dnetworkmanager=true -Dportal_helper=true -Dsystemd=true -Dcamera_monitor=true
+          ninja -C build
+          ninja -C build install
+          ldconfig
+          cd /root/src
+          glib-compile-schemas /usr/share/glib-2.0/schemas || true
+
+          echo "=== [7/9] 清理构建依赖并恢复自编译文件 ==="
+          if [ -s /root/build-deps.list ]; then
+            # 把构建期新增包标记为 auto 后再 autoremove；运行期手动安装的包
+            # 及其依赖不会被误删，只清掉纯构建依赖。
+            mapfile -t build_pkgs < <(sed 's/:.*$//' /root/build-deps.list | sort -u)
+            if [ "${#build_pkgs[@]}" -gt 0 ]; then
+              apt-mark auto "${build_pkgs[@]}" >/dev/null 2>&1 || true
+            fi
+          fi
+          # 保留 meson/ninja，下面要用它们重装被 autoremove 清掉的文件。
+          apt-mark manual meson ninja-build >/dev/null 2>&1 || true
+          apt-get autoremove --purge -y || true
+
+          # autoremove 可能删掉与 -dev 包同路径的自编译文件，重装一遍，
+          # 保证最终状态是 mobile 版本。
+          ninja -C /root/src/mutter-mobile/build install
+          ninja -C /root/src/gnome-settings-daemon-mobile/build install
+          ninja -C /root/src/gnome-shell-mobile/build install
+          ldconfig
+          glib-compile-schemas /usr/share/glib-2.0/schemas || true
+
+          # 构建工具不再需要。
+          apt-get purge -y meson ninja-build >/dev/null 2>&1 || true
+          apt-get autoremove --purge -y || true
+
+          # 防止 apt 升级时把 mobile 组件覆盖回发行版版本。
+          for p in gnome-shell gnome-shell-common mutter mutter-common libmutter-51-0 \
+                   gir1.2-mutter-51 gnome-settings-daemon gnome-settings-daemon-common; do
+            apt-mark hold "$p" >/dev/null 2>&1 || true
+          done
+
+          echo "=== [8/9] 校验 GNOME Shell Mobile ==="
+          gnome-shell --version > /root/gnome-shell-mobile-version.txt 2>&1 || true
+          cat /root/gnome-shell-mobile-version.txt
+          grep -q "$GNOME_MOBILE_TAG" /root/gnome-shell-mobile-version.txt \
+            || { echo "::error::gnome-shell 版本不是 $GNOME_MOBILE_TAG"; exit 1; }
+          test -e /usr/lib/aarch64-linux-gnu/libmutter-51.so.0 \
+            || { echo "::error::缺少 libmutter-51.so.0"; exit 1; }
+          test -e /usr/lib/aarch64-linux-gnu/girepository-1.0/Mutter-51.typelib \
+            || { echo "::error::缺少 Mutter-51.typelib"; exit 1; }
+          gsd_wwan="$(find /usr/libexec /usr/lib/aarch64-linux-gnu -maxdepth 3 \
+            -name 'gsd-wwan*' -print -quit 2>/dev/null || true)"
+          if [ -z "$gsd_wwan" ]; then
+            echo "WARNING: 没找到 gsd-wwan（gnome-settings-daemon-mobile）"
+          else
+            echo "gsd-wwan: $gsd_wwan"
+          fi
+
+          echo "=== [9/9] 系统配置与清理 ==="
+          printf '%s\n' "$ROOTFS_HOSTNAME" > /etc/hostname
+          cat > /etc/hosts <<HOSTS_EOF
+          127.0.0.1       localhost
+          127.0.1.1       $ROOTFS_HOSTNAME
+          ::1             localhost ip6-localhost ip6-loopback
+          HOSTS_EOF
+
+          # init-rootfs.c 用 label "rootfs" 找根文件系统，fstab 也按 label 写。
+          cat > /etc/fstab <<'FSTAB_EOF'
+          # <device> <mount> <type> <options> <dump> <pass>
+          LABEL=rootfs  /  ext4  defaults,noatime,errors=remount-ro  0  1
+          FSTAB_EOF
+
+          sed -i 's/^#\s*en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+          grep -q '^en_US.UTF-8 UTF-8' /etc/locale.gen || echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen
+          locale-gen
+          printf 'LANG=en_US.UTF-8\n' > /etc/default/locale
+          printf 'LANG=en_US.UTF-8\n' > /etc/locale.conf
+          if [ -e /usr/share/zoneinfo/Asia/Shanghai ]; then
+            ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+            echo 'Asia/Shanghai' > /etc/timezone
+          fi
+
+          printf 'root:%s\n' "$ROOTFS_PASSWORD" | chpasswd
+
+          # 桌面用户；Ubuntu 的管理员组是 sudo。
+          if ! id "$ROOTFS_DESKTOP_USER" >/dev/null 2>&1; then
+            useradd -m -s /bin/bash "$ROOTFS_DESKTOP_USER"
+          fi
+          for grp in sudo adm audio video input render bluetooth plugdev netdev lpadmin scanner; do
+            if getent group "$grp" >/dev/null; then
+              usermod -aG "$grp" "$ROOTFS_DESKTOP_USER"
+            fi
+          done
+          printf '%s:%s\n' "$ROOTFS_DESKTOP_USER" \
+            "${ROOTFS_DESKTOP_PASSWORD:-$ROOTFS_PASSWORD}" | chpasswd
+          install -d -m 750 /etc/sudoers.d
+          printf '%%sudo ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/10-sudo
+          chmod 440 /etc/sudoers.d/10-sudo
+
+          if dpkg -s openssh-server >/dev/null 2>&1; then
+            sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+            sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+            # 每台设备首次开机生成唯一 host key：Ubuntu 的 sshd-keygen.service
+            # 由包默认启用，配合 /etc/machine-id 缺失（首次开机）自动执行。
+            rm -f /etc/ssh/ssh_host_*
+            systemctl enable sshd-keygen.service 2>/dev/null || true
+            # Ubuntu 26.10 默认 socket 激活；只有没启用 socket 时才启用 service。
+            if [ -L /etc/systemd/system/sockets.target.wants/ssh.socket ]; then
+              echo "ssh.socket 已由包默认启用"
+            else
+              systemctl enable ssh.service 2>/dev/null || echo "WARNING: cannot enable ssh.service"
+            fi
+          fi
+
+          # NetworkManager 走 systemd-resolved 管 DNS。
+          mkdir -p /etc/NetworkManager/conf.d
+          printf '[main]\ndns=systemd-resolved\n' > /etc/NetworkManager/conf.d/dns.conf
+
+          for svc in NetworkManager systemd-resolved systemd-timesyncd bluetooth ModemManager; do
+            systemctl enable "$svc" 2>/dev/null || echo "WARNING: cannot enable $svc"
+          done
+          systemctl enable iio-sensor-proxy.service 2>/dev/null || true
+          systemctl enable serial-getty@ttyS0.service 2>/dev/null || true
+          systemctl disable getty@tty1.service 2>/dev/null || true
+
+          # GDM 用 Wayland；GNOME Shell Mobile 的 mobile 布局也跑在 Wayland 上。
+          install -d -m 755 /etc/gdm3
+          cat > /etc/gdm3/custom.conf <<'GDM_EOF'
+          [daemon]
+          WaylandEnable=true
+          GDM_EOF
+          chmod 644 /etc/gdm3/custom.conf
+
+          if systemctl enable gdm.service 2>/dev/null || systemctl enable gdm3.service 2>/dev/null; then
+            echo "display manager: gdm enabled"
+          else
+            echo "::error::无法启用 gdm.service / gdm3.service"
+            exit 1
+          fi
+          systemctl set-default graphical.target \
+            || ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target
+
+          ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+
+          # 让每台设备首次开机生成唯一 machine-id（文件缺失才算“首次开机”，
+          # 空文件不算，见 machine-id(5) 的 First Boot Semantics）。
+          rm -f /etc/machine-id
+          rm -f /var/lib/systemd/random-seed
+
+          # 本 workflow 明确不安装固件/内核模块，再兜底清一次。
+          apt-get purge -y 'linux-firmware*' 'wireless-regdb' 'linux-image*' 'linux-modules*' 'linux-headers*' 2>/dev/null || true
+          apt-get autoremove --purge -y || true
+          rm -rf /lib/firmware /usr/lib/firmware
+          for d in /lib/modules /usr/lib/modules; do
+            mkdir -p "$d"
+            find "$d" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          done
+          mkdir -p /boot
+          find /boot -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+          # chroot 装包用的 policy-rc.d 不留在最终镜像里。
+          rm -f /usr/sbin/policy-rc.d
+
+          # 清缓存，缩小镜像。
+          apt-get clean
+          rm -rf /var/lib/apt/lists/*
+          rm -rf /var/cache/apt/archives/*
+          rm -rf /root/src
+          rm -f /root/pkgs-before-build.txt /root/pkgs-after-build.txt /root/build-deps.list
+          rm -rf /var/log/journal/*
+          find /var/log -type f -exec truncate -s 0 {} + 2>/dev/null || true
+          mkdir -p /var/lib/apt/lists/partial /var/cache/apt/archives/partial
+
+          echo "Ubuntu 26.10 GNOME Shell Mobile rootfs setup done"
+          EOS
+          sudo chmod +x rootfs/root/setup-ubuntu-rootfs.sh
+
+      - name: Configure Ubuntu rootfs in native aarch64 chroot
+        run: |
+          set -euo pipefail
+          # runner 本身是 aarch64，chroot 可直接执行 Ubuntu arm64 的二进制。
+          sudo rm -f rootfs/etc/resolv.conf
+          sudo cp /etc/resolv.conf rootfs/etc/resolv.conf
+          # 宿主机若用 systemd-resolved stub，chroot 里没有该服务，换公共 DNS。
+          if grep -q '^nameserver 127\.0\.0\.53' rootfs/etc/resolv.conf; then
+            echo "chroot 内无 systemd-resolved，改用公共 DNS"
+            printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' | sudo tee rootfs/etc/resolv.conf > /dev/null
+          fi
+          sudo mkdir -p rootfs/proc rootfs/sys rootfs/dev/pts
+
+          cleanup() {
+            sudo umount -lf rootfs/dev/pts 2>/dev/null || true
+            sudo umount -lf rootfs/dev     2>/dev/null || true
+            sudo umount -lf rootfs/proc    2>/dev/null || true
+            sudo umount -lf rootfs/sys     2>/dev/null || true
+            sudo umount -lf rootfs         2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          # 和 Arch job 一样：把 rootfs bind 到自身，避免 apt/dpkg 的
+          # 挂载点检查误判；proc/sys/dev 提供 chroot 内基本环境。
+          sudo mount --bind rootfs rootfs
+          sudo mount -t proc  proc  rootfs/proc
+          sudo mount -t sysfs sysfs rootfs/sys
+          sudo mount --bind /dev rootfs/dev
+          sudo mount --bind /dev/pts rootfs/dev/pts
+
+          sudo chroot rootfs /usr/bin/env -i \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/root \
+            LANG=C \
+            UBUNTU_SUITE="$UBUNTU_SUITE" \
+            ROOTFS_HOSTNAME="$ROOTFS_HOSTNAME" \
+            ROOTFS_PASSWORD="$ROOT_PASSWORD" \
+            ROOTFS_DESKTOP_USER="$UBUNTU_DESKTOP_USER" \
+            ROOTFS_DESKTOP_PASSWORD="${DESKTOP_PASSWORD:-$ROOT_PASSWORD}" \
+            ROOTFS_PACKAGES="$UBUNTU_PACKAGES" \
+            GNOME_MOBILE_TAG="$GNOME_MOBILE_TAG" \
+            GNOME_MOBILE_GITLAB="$GNOME_MOBILE_GITLAB" \
+            /bin/bash /root/setup-ubuntu-rootfs.sh
+
+          cleanup
+          trap - EXIT
+
+      - name: Clean chroot artifacts and remove all kernel modules
+        run: |
+          set -euo pipefail
+          sudo umount -lf rootfs/dev/pts 2>/dev/null || true
+          sudo umount -lf rootfs/dev     2>/dev/null || true
+          sudo umount -lf rootfs/proc    2>/dev/null || true
+          sudo umount -lf rootfs/sys     2>/dev/null || true
+
+          # 防止后面 rsync/mkfs 把宿主机 /proc /sys /dev 抄进镜像。
+          for d in proc sys dev dev/pts; do
+            if mountpoint -q "rootfs/$d"; then
+              echo "::error::rootfs/$d 仍然挂载着，不能打进镜像"
+              exit 1
+            fi
+          done
+
+          sudo rm -f rootfs/root/setup-ubuntu-rootfs.sh
+
+          # 本工作流明确不安装内核模块；清空 /lib/modules（以及 usrmerge 下的
+          # /usr/lib/modules），保留空目录。
+          for d in rootfs/lib/modules rootfs/usr/lib/modules; do
+            sudo mkdir -p "$d"
+            sudo find "$d" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          done
+
+          # rootfs 的 /boot 由外部 boot 分区提供，清掉发行版可能残留的
+          # kernel/initramfs（initramfs 里也会打包模块）。
+          sudo mkdir -p rootfs/boot
+          sudo find rootfs/boot -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+          # 确认没有把发行版内核带进来。
+          if grep -Eq '^Package: linux-(image|modules|headers)' rootfs/var/lib/dpkg/status; then
+            echo "::error::rootfs 里仍然安装了发行版内核包"
+            exit 1
+          fi
+          if [ -n "$(find rootfs/boot -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+            echo "::error::rootfs/boot 不是空的，仍有 kernel/initramfs 残留"
+            exit 1
+          fi
+
+      - name: Verify Ubuntu rootfs
+        run: |
+          set -euo pipefail
+          if [ ! -e rootfs/sbin/init ] && [ ! -L rootfs/sbin/init ] && [ -e rootfs/usr/lib/systemd/systemd ]; then
+            echo "WARNING: /sbin/init 缺失，补一个到 systemd 的软链接"
+            sudo mkdir -p rootfs/sbin
+            sudo ln -sf /usr/lib/systemd/systemd rootfs/sbin/init
+          fi
+          { [ -e rootfs/sbin/init ] || [ -L rootfs/sbin/init ]; } \
+            || { echo "::error::rootfs 里没有 /sbin/init"; exit 1; }
+          test -e rootfs/usr/lib/systemd/systemd
+          test -x rootfs/usr/bin/systemctl
+          init_target="$(readlink rootfs/sbin/init || true)"
+          case "$init_target" in
+            */systemd) echo "/sbin/init -> $init_target" ;;
+            *) echo "::error::/sbin/init 未指向 systemd：$init_target"; exit 1 ;;
+          esac
+          test -f rootfs/etc/fstab
+          grep -q '^LABEL=rootfs' rootfs/etc/fstab
+          test -f rootfs/etc/hostname
+          test -f rootfs/etc/hosts
+
+          # 不安装固件：既不能有固件/regulatory 包，也不能有固件文件。
+          if grep -Eq '^Package: (linux-firmware|wireless-regdb)' rootfs/var/lib/dpkg/status; then
+            echo "::error::rootfs 里仍然安装了固件/regulatory 包"
+            exit 1
+          fi
+          for d in rootfs/lib/firmware rootfs/usr/lib/firmware; do
+            if [ -d "$d" ] && [ -n "$(find "$d" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+              echo "::error::$d 不是空的，本工作流不应安装固件"
+              exit 1
+            fi
+          done
+          for d in rootfs/lib/modules rootfs/usr/lib/modules; do
+            if [ -d "$d" ] && [ -n "$(find "$d" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+              echo "::error::$d 不是空的，本工作流不应安装内核模块"
+              exit 1
+            fi
+          done
+
+          # GNOME Shell Mobile：必须是源码构建的那个 tag，而不是发行版 51.0。
+          grep -q "$GNOME_MOBILE_TAG" rootfs/root/gnome-shell-mobile-version.txt \
+            || { echo "::error::gnome-shell 不是 GNOME Shell Mobile $GNOME_MOBILE_TAG"; exit 1; }
+          cat rootfs/root/gnome-shell-mobile-version.txt
+          test -e rootfs/usr/lib/aarch64-linux-gnu/libmutter-51.so.0
+          test -e rootfs/usr/lib/aarch64-linux-gnu/girepository-1.0/Mutter-51.typelib
+          test -x rootfs/usr/bin/gnome-shell
+          test -f rootfs/usr/share/wayland-sessions/gnome.desktop \
+            || { echo "::error::缺少 GNOME Wayland 会话文件"; exit 1; }
+
+          test -L rootfs/etc/systemd/system/display-manager.service \
+            || { echo "::error::display-manager.service 未启用"; exit 1; }
+          readlink rootfs/etc/systemd/system/display-manager.service | grep -q 'gdm' \
+            || { echo "::error::display-manager.service 不是 gdm"; exit 1; }
+          readlink rootfs/etc/systemd/system/default.target | grep -q 'graphical.target' \
+            || { echo "::error::默认 systemd target 不是 graphical.target"; exit 1; }
+
+          grep -q "^${UBUNTU_DESKTOP_USER}:" rootfs/etc/passwd \
+            || { echo "::error::桌面用户 ${UBUNTU_DESKTOP_USER} 不存在"; exit 1; }
+          test -d "rootfs/home/${UBUNTU_DESKTOP_USER}" \
+            || { echo "::error::桌面用户 ${UBUNTU_DESKTOP_USER} 的 home 不存在"; exit 1; }
+          sudo grep -q '^%sudo ALL=(ALL:ALL) ALL$' rootfs/etc/sudoers.d/10-sudo \
+            || { echo "::error::sudo 配置缺失"; exit 1; }
+          sudo_members="$(awk -F: '$1=="sudo"{print $4}' rootfs/etc/group)"
+          case ",$sudo_members," in
+            *",$UBUNTU_DESKTOP_USER,"*) echo "sudo group: $UBUNTU_DESKTOP_USER" ;;
+            *) echo "::error::桌面用户不在 sudo 组"; exit 1 ;;
+          esac
+
+          # 确认覆盖安装的发行版包已 hold，避免 apt upgrade 把 mobile 组件覆盖回去。
+          if grep -A1 '^Package: gnome-shell$' rootfs/var/lib/dpkg/status | grep -q 'Status: hold'; then
+            echo "gnome-shell is held"
+          else
+            echo "WARNING: gnome-shell 未被 apt hold"
+          fi
+
+          if [ -L rootfs/etc/systemd/system/multi-user.target.wants/ssh.service ] \
+            || [ -L rootfs/etc/systemd/system/sockets.target.wants/ssh.socket ]; then
+            echo "ssh enabled"
+          else
+            echo "WARNING: ssh 未设置开机自启"
+          fi
+          test -L rootfs/etc/systemd/system/multi-user.target.wants/NetworkManager.service \
+            || echo "WARNING: NetworkManager 未设置开机自启"
+
+          sudo rm -f rootfs/root/gnome-shell-mobile-version.txt
+          echo "--- /sbin/init ---"
+          ls -l rootfs/sbin/init
+          echo "--- modules ---"
+          ls -la rootfs/lib/modules
+
+      - name: Create ext4 image (loop mount with mkfs -d fallback)
+        run: |
+          set -euo pipefail
+          MNT=/mnt/ubuntu-rootfs-img
+          cleanup() {
+            sudo umount -lf "$MNT" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          truncate -s "${UBUNTU_ROOTFS_SIZE^^}" ubuntu-rootfs.img
+          sudo mkfs.ext4 -F -L "$ROOTFS_LABEL" ubuntu-rootfs.img
+
+          sudo mkdir -p "$MNT"
+          used_loop=0
+          if sudo mount -o loop ubuntu-rootfs.img "$MNT"; then
+            # rsync 保留 xattr / capabilities / ACL / 设备节点；
+            # mkfs.ext4 -d 在部分 e2fsprogs 上会丢 capabilities。
+            if sudo rsync -aHAX --numeric-ids rootfs/ "$MNT/"; then
+              sync
+              sudo umount "$MNT"
+              used_loop=1
+            else
+              echo "::warning::rsync 到 loop 镜像失败，回退到 mkfs.ext4 -d"
+              sudo umount -lf "$MNT" 2>/dev/null || true
+            fi
+          fi
+          if [ "$used_loop" -ne 1 ]; then
+            if mountpoint -q "$MNT"; then
+              echo "::error::$MNT 仍然挂载，拒绝在已挂载的镜像上重新 mkfs"
+              exit 1
+            fi
+            echo "loop mount 不可用或 rsync 失败，回退到 mkfs.ext4 -d"
+            sudo mkfs.ext4 -F -L "$ROOTFS_LABEL" -d rootfs ubuntu-rootfs.img
+          fi
+          cleanup
+          trap - EXIT
+          sudo rmdir "$MNT" 2>/dev/null || true
+
+          set +e
+          sudo e2fsck -fy ubuntu-rootfs.img
+          e2fsck_rc=$?
+          set -e
+          # 0=无错误，1/2=已修复（2 只是建议重启）；>=4 表示仍有未修复错误。
+          if [ "$e2fsck_rc" -ge 4 ]; then
+            echo "::error::e2fsck 返回 $e2fsck_rc，文件系统存在未修复错误"
+            exit 1
+          fi
+          sudo tune2fs -L "$ROOTFS_LABEL" ubuntu-rootfs.img
+          sudo dumpe2fs -h ubuntu-rootfs.img | grep -E \
+            'Filesystem volume name|Filesystem UUID|Block count|Block size'
+
+          # 内容已经写进 ubuntu-rootfs.img，删除源目录释放 runner 磁盘。
+          sudo rm -rf rootfs
+
+          img2simg ubuntu-rootfs.img ubuntu-rootfs-sparse.img
+          sha256sum ubuntu-rootfs-sparse.img | tee ubuntu-rootfs-sparse.img.sha256
+          ls -lh ubuntu-rootfs.img ubuntu-rootfs-sparse.img
+          du -h ubuntu-rootfs.img ubuntu-rootfs-sparse.img
+
+      - name: Upload Ubuntu 26.10 ARM64 rootfs (sparse)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-26.10-rootfs
+          path: |
+            ubuntu-rootfs-sparse.img
+            ubuntu-rootfs-sparse.img.sha256
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload raw ubuntu-rootfs.img
+        if: ${{ github.event.inputs.UPLOAD_RAW_IMG == 'true' || github.event.inputs.UPLOAD_RAW_IMG == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-26.10-rootfs-raw
+          path: ubuntu-rootfs.img
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Write job summary
+        run: |
+          {
+            echo "## Ubuntu 26.10 ARM64 rootfs (GNOME Shell Mobile)"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|------|----|"
+            echo "| 构建环境 | GitHub 原生 arm64（\`ubuntu-24.04-arm\`） |"
+            echo "| 发行版 | Ubuntu 26.10（Stonking Stingray, \`$UBUNTU_SUITE\`）arm64 |"
+            echo "| 桌面环境 | GNOME Shell Mobile + GDM（Wayland） |"
+            echo "| GNOME Shell Mobile tag | \`$GNOME_MOBILE_TAG\`（源码构建 mutter / gsd / shell） |"
+            echo "| 桌面用户 | \`$UBUNTU_DESKTOP_USER\` |"
+            echo "| 镜像大小 | \`$UBUNTU_ROOTFS_SIZE\` |"
+            echo "| ext4 label | \`$ROOTFS_LABEL\` |"
+            echo "| 主机名 | \`$ROOTFS_HOSTNAME\` |"
+            echo "| 移动端适配 | mobile 布局 + 手机 OSK + 自动旋转（iio-sensor-proxy） |"
+            echo "| 固件 | 未安装（按设计） |"
+            echo "| 内核模块 | 未安装（按设计） |"
+            echo ""
+            echo '```'
+            ls -lh ubuntu-rootfs.img ubuntu-rootfs-sparse.img
+            echo '```'
+            echo ""
+            echo "刷写：把 \`ubuntu-rootfs-sparse.img\` 刷到 GPT 名为 \`rootfs\` 的分区，"
+            echo "或 \`fastboot flash <rootfs 分区> ubuntu-rootfs-sparse.img\`。"
+            echo ""
+            echo "注意：mutter / gnome-settings-daemon / gnome-shell 已被源码构建的 mobile 版本覆盖，"
+            echo "对应发行版包已 \`apt-mark hold\`，避免 \`apt upgrade\` 覆盖回去。"
           } >> "$GITHUB_STEP_SUMMARY"
