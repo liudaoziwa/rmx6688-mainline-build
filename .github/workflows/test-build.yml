@@ -918,7 +918,8 @@ jobs:
             "${GNOME_MOBILE_GITLAB}/mutter-mobile.git"
           cd mutter-mobile
           meson setup build --prefix=/usr --libdir=lib/aarch64-linux-gnu --buildtype=release \
-            -Dstrip=true -Dcogl_tests=false -Dclutter_tests=false -Dmutter_tests=false -Ddocs=false
+            -Dstrip=true -Dtests=false -Dcogl_tests=false -Dclutter_tests=false \
+            -Dmutter_tests=false -Ddocs=false
           ninja -C build
           ninja -C build install
           ldconfig
@@ -965,10 +966,12 @@ jobs:
           apt-get autoremove --purge -y || true
 
           # autoremove 可能删掉与 -dev 包同路径的自编译文件，重装一遍，
-          # 保证最终状态是 mobile 版本。
-          ninja -C /root/src/mutter-mobile/build install
-          ninja -C /root/src/gnome-settings-daemon-mobile/build install
-          ninja -C /root/src/gnome-shell-mobile/build install
+          # 保证最终状态是 mobile 版本。必须 --no-rebuild：autoremove 后
+          # libglib2.0-dev 的 .so 链接可能已删除，ninja install 会尝试重建
+          # 测试目标并失败；meson install --no-rebuild 只从 build 目录恢复文件。
+          meson install -C /root/src/mutter-mobile/build --no-rebuild
+          meson install -C /root/src/gnome-settings-daemon-mobile/build --no-rebuild
+          meson install -C /root/src/gnome-shell-mobile/build --no-rebuild
           ldconfig
           glib-compile-schemas /usr/share/glib-2.0/schemas || true
 
