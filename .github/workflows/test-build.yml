@@ -1,21 +1,23 @@
 name: build-kernel-and-rootfs
 
 # =============================================================================
-# 内核 + Arch Linux ARM64 / Ubuntu 26.10 ARM64 / Fedora 44 ARM64 rootfs 构建。
+# 内核 + Arch Linux ARM64 / Ubuntu 26.04 ARM64 / Fedora 44 ARM64 rootfs 构建。
 #
 # 本文件有三个 rootfs job，都只做 rootfs：
 #   - 在 GitHub 原生 arm64 Ubuntu runner（ubuntu-24.04-arm）上构建，
 #     直接 chroot，不需要 qemu-user-static/binfmt；
 #   - 不安装任何设备固件包（含 linux-firmware），也不编译/安装内核模块、不跑 depmod；
 #     Fedora job 例外保留 wireless-regdb（仅 regulatory.db，无设备固件，见该 job 注释）；
+#   - 所有 job 解压 rootfs 后都要把 rootfs 顶层目录 chown 成 root:root；
+#     否则 chroot/首次开机时 `/` 属主是 runner 用户，systemd-tmpfiles 会报
+#     unsafe path transition 并跳过 /var，导致 plasmalogin 等 tmpfiles 相关服务失败；
 #   - rootfs 的 /boot 都清空，内核/initramfs 由外部 boot 分区提供；
 #   - Arch job 默认安装 KDE Plasma Mobile（plasma-mobile + Plasma Login Manager），
 #     可用 INSTALL_KDE=false 回到 headless；
-#   - Ubuntu job 安装 Ubuntu 26.10 arm64 + GNOME Shell Mobile：
-#     Ubuntu 仓库里没有 gnome-shell-mobile，这个 job 会从 GNOME GitLab
-#     （verdre/{mutter,gnome-settings-daemon,gnome-shell}-mobile）按 tag
-#     源码构建，并覆盖发行版的 mutter / gnome-settings-daemon / gnome-shell；
-#     安装 iio-sensor-proxy（自动旋转）、ModemManager（蜂窝网络）等移动端组件。
+#   - Ubuntu job 安装 Ubuntu 26.04 arm64 + Phosh：全部使用 Ubuntu 仓库二进制包
+#     （phosh / phrog / phosh-osk-stevia / phoc / greetd），不源码编译
+#     GNOME Shell Mobile；安装 iio-sensor-proxy（自动旋转）、ModemManager
+#     （蜂窝网络）、feedbackd / callaudiod 等移动端组件。
 #   - Fedora job 安装 Fedora 44 arm64 + Phosh：使用 Fedora 的 phosh-desktop
 #     组安装手机 shell、Stevia 屏幕键盘和 phrog 触摸登录器；同样安装
 #     iio-sensor-proxy、ModemManager、calls/chatty 等移动端组件。
@@ -46,7 +48,7 @@ on:
         default: "5G"
         type: string
       UBUNTU_ROOTFS_SIZE:
-        description: "Ubuntu rootfs 镜像大小（GNOME Shell Mobile 建议 6G）"
+        description: "Ubuntu rootfs 镜像大小（Phosh 建议 6G）"
         required: true
         default: "6G"
         type: string
@@ -101,14 +103,9 @@ on:
         default: "networkmanager wpa_supplicant iwd openssh sudo vim less curl wget ca-certificates htop bluez bluez-utils iw tzdata"
         type: string
       UBUNTU_PACKAGES:
-        description: "Ubuntu rootfs 安装的包（空格分隔；GNOME Shell Mobile + 移动端应用）"
+        description: "Ubuntu rootfs 安装的包（空格分隔；Phosh 桌面 + 移动端应用，全部用仓库二进制包）"
         required: false
-        default: "systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus-broker dbus-bin dbus-user-session libpam-systemd libnss-systemd gnome-session gnome-shell gdm3 gnome-settings-daemon gnome-control-center gnome-bluetooth-sendto gnome-keyring network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 callaudiod feedbackd pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2"
-        type: string
-      GNOME_MOBILE_TAG:
-        description: "GNOME Shell Mobile 源码 tag（mutter / gsd / shell 三个仓库一致）"
-        required: false
-        default: "51.1.mobile.3"
+        default: "systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus dbus-user-session libpam-systemd libnss-systemd phosh phrog phosh-osk-stevia greetd gnome-session-bin gnome-session-common gnome-settings-daemon gnome-shell-common gnome-keyring gnome-bluetooth-sendto feedbackd callaudiod mmsd-tng network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-lato fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2"
         type: string
       FEDORA_PACKAGES:
         description: "Fedora rootfs 额外安装的包（空格分隔；Phosh 桌面组始终安装）"
@@ -135,13 +132,11 @@ env:
   # os.archlinuxarm.org 的 HTTPS 证书当前与域名不匹配，改用可信 HTTPS 镜像。
   ALARM_TARBALL: https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm/os/ArchLinuxARM-aarch64-latest.tar.gz
   ALARM_TARBALL_FALLBACK: https://mirrors.ustc.edu.cn/archlinuxarm/os/ArchLinuxARM-aarch64-latest.tar.gz
-  # Ubuntu 26.10 (Stonking Stingray) arm64 base rootfs；arm64 走 ports 仓库。
-  UBUNTU_BASE_TARBALL: https://cdimage.ubuntu.com/ubuntu-base/releases/26.10/release/ubuntu-base-26.10-base-arm64.tar.gz
-  UBUNTU_BASE_TARBALL_FALLBACK: https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cdimage/ubuntu-base/releases/26.10/release/ubuntu-base-26.10-base-arm64.tar.gz
-  UBUNTU_BASE_TARBALL_SHA256: 8b7ea4ed71a92873f7f4e260a3defe0d9ed85cb69c0155b12414208f79fa0f2d
-  UBUNTU_SUITE: stonking
-  # GNOME Shell Mobile（手机适配的 GNOME Shell fork），Ubuntu 仓库里没有。
-  GNOME_MOBILE_GITLAB: https://gitlab.gnome.org/verdre
+  # Ubuntu 26.04 LTS (Resolute Raccoon) arm64 base rootfs；arm64 走 ports 仓库。
+  UBUNTU_BASE_TARBALL: https://cdimage.ubuntu.com/ubuntu-base/releases/26.04/release/ubuntu-base-26.04-base-arm64.tar.gz
+  UBUNTU_BASE_TARBALL_FALLBACK: https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cdimage/ubuntu-base/releases/26.04/release/ubuntu-base-26.04-base-arm64.tar.gz
+  UBUNTU_BASE_TARBALL_SHA256: b2b46a37324ea1954e93f293fe6d7c2241daf2fc298c4022e6e4caceeed74cab
+  UBUNTU_SUITE: resolute
 
 jobs:
   # ==========================================================
@@ -299,6 +294,13 @@ jobs:
           # bsdtar 显式保留 ACL / xattr（file capabilities）；普通 tar 会丢。
           sudo bsdtar --acls --xattrs -xpf ArchLinuxARM-aarch64.tar.gz -C rootfs
           test -x rootfs/bin/bash
+          # rootfs 目录本身是 runner 用户创建的；bsdtar 只改归档内条目的属主，
+          # 不会把目录自身改成 root。chroot/开机后 `/` 会显示 arch/runner 用户，
+          # systemd-tmpfiles 会判定 unsafe path transition 并跳过 /var，于是
+          # /usr/lib/tmpfiles.d/plasmalogin.conf 里的 /var/lib/plasmalogin
+          # 不会创建，plasmalogin greeter 会因 chdir 失败秒退。
+          sudo chown 0:0 rootfs
+          sudo chmod 0755 rootfs
           rm -f ArchLinuxARM-aarch64.tar.gz
           ls -ld rootfs rootfs/usr rootfs/etc
 
@@ -345,6 +347,15 @@ jobs:
             pacman -S --noconfirm --needed --disable-download-timeout "${kde_pkgs[@]}"
             # KWin/Wayland 需要 Mesa；即使 KDE_PACKAGES 被精简也显式保证安装。
             pacman -S --noconfirm --needed --disable-download-timeout mesa
+            # plasmalogin 的 tmpfiles 规则会创建 /var/lib/plasmalogin，但若根文件系统
+            # 层曾出现属主不一致，tmpfiles 可能跳过。这里显式补一次，避免 greeter
+            # chdir(/var/lib/plasmalogin) 失败后秒退。
+            if getent passwd plasmalogin >/dev/null 2>&1 \
+               && getent group plasmalogin >/dev/null 2>&1; then
+              install -d -o plasmalogin -g plasmalogin -m 0750 /var/lib/plasmalogin
+            else
+              echo "WARNING: 找不到 plasmalogin 用户/组，跳过 /var/lib/plasmalogin 创建"
+            fi
           fi
 
           # Plasma Mobile 或额外包若间接拉入固件，再清理一次。
@@ -454,6 +465,13 @@ jobs:
         run: |
           set -euo pipefail
           # runner 本身是 aarch64，chroot 可直接执行 Arch Linux ARM 的二进制。
+          # 顶层属主必须是 root：否则 chroot/首次开机 systemd-tmpfiles 会报
+          # unsafe path transition，导致 plasmalogin 等 tmpfiles 服务异常。
+          rootfs_owner="$(stat -c '%u' rootfs)"
+          [ "$rootfs_owner" = 0 ] || {
+            echo "::error::rootfs 顶层属主不是 root：UID=$rootfs_owner"
+            exit 1
+          }
           sudo rm -f rootfs/etc/resolv.conf
           sudo cp /etc/resolv.conf rootfs/etc/resolv.conf
           # 宿主机若用 systemd-resolved stub，chroot 里没有该服务，换公共 DNS。
@@ -574,6 +592,19 @@ jobs:
             || echo "WARNING: sshd 未设置开机自启"
           test -L rootfs/etc/systemd/system/multi-user.target.wants/NetworkManager.service \
             || echo "WARNING: NetworkManager 未设置开机自启"
+
+          # Plasma Login Manager 的 greeter 需要 /var/lib/plasmalogin；
+          # 缺它或属主不对时 plasmalogin-helper 会 chdir 失败并退出码 3。
+          if [ -e rootfs/usr/lib/systemd/system/plasmalogin.service ]; then
+            test -d rootfs/var/lib/plasmalogin \
+              || { echo "::error::缺少 /var/lib/plasmalogin，plasmalogin greeter 会失败"; exit 1; }
+            plasmalogin_dir_owner="$(stat -c '%U:%G' rootfs/var/lib/plasmalogin)"
+            plasmalogin_dir_mode="$(stat -c '%a' rootfs/var/lib/plasmalogin)"
+            [ "$plasmalogin_dir_owner" = "plasmalogin:plasmalogin" ] \
+              || { echo "::error::/var/lib/plasmalogin 属主不是 plasmalogin:plasmalogin：$plasmalogin_dir_owner"; exit 1; }
+            [ "$plasmalogin_dir_mode" = "750" ] \
+              || { echo "::error::/var/lib/plasmalogin 权限不是 750：$plasmalogin_dir_mode"; exit 1; }
+          fi
 
           if [ "$INSTALL_KDE" = "true" ]; then
             test -x rootfs/usr/bin/plasmalogin \
@@ -723,23 +754,20 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ==========================================================
-  # Job 3：Ubuntu 26.10 ARM64 rootfs（GNOME Shell Mobile，移动端适配）
+  # Job 3：Ubuntu 26.04 ARM64 rootfs（Phosh，移动端适配）
   # 独立于内核和 Arch rootfs；不安装固件和内核模块。
-  # Ubuntu 仓库没有 gnome-shell-mobile，本 job 从 GNOME GitLab
-  # （verdre/{mutter,gnome-settings-daemon,gnome-shell}-mobile）
-  # 按固定 tag 源码构建，覆盖发行版对应组件：
-  #   - gnome-shell-mobile：mobile 布局 + 手机 OSK 键盘；
-  #   - mutter-mobile：移动端手势/旋屏；
-  #   - gnome-settings-daemon-mobile：移动端 GSD 插件；
+  # Ubuntu 仓库没有 gnome-shell-mobile，本 job 改用仓库里的 Phosh 二进制包：
+  #   - phosh / phosh-osk-stevia：手机 shell + 触摸键盘；
+  #   - phrog / greetd：触摸登录器；
   #   - iio-sensor-proxy 自动旋转、ModemManager/chatty/gnome-calls 电话短信。
   # ==========================================================
   ubuntu-rootfs:
-    name: build Ubuntu 26.10 ARM64 rootfs (GNOME Shell Mobile)
+    name: build Ubuntu 26.04 ARM64 rootfs (Phosh)
     if: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.TASK == '全部' || github.event.inputs.TASK == '仅Ubuntu') }}
-    # rootfs 用原生 arm64 runner，源码构建 mutter/gsd/shell 不需要 qemu。
+    # rootfs 用原生 arm64 runner；全部用 apt 二进制包，不需要 qemu。
     runs-on: ubuntu-24.04-arm
-    # apt 装包 + 三个 GNOME 组件源码构建，留足时间。
-    timeout-minutes: 300
+    # apt 装包 + 镜像打包，留足时间。
+    timeout-minutes: 180
 
     env:
       UBUNTU_ROOTFS_SIZE: ${{ github.event.inputs.UBUNTU_ROOTFS_SIZE || '6G' }}
@@ -747,8 +775,7 @@ jobs:
       ROOT_PASSWORD: ${{ github.event.inputs.ROOT_PASSWORD || '1234' }}
       UBUNTU_DESKTOP_USER: ${{ github.event.inputs.UBUNTU_DESKTOP_USER || 'ubuntu' }}
       DESKTOP_PASSWORD: ${{ github.event.inputs.DESKTOP_PASSWORD || '' }}
-      UBUNTU_PACKAGES: ${{ github.event.inputs.UBUNTU_PACKAGES || 'systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus-broker dbus-bin dbus-user-session libpam-systemd libnss-systemd gnome-session gnome-shell gdm3 gnome-settings-daemon gnome-control-center gnome-bluetooth-sendto gnome-keyring network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 callaudiod feedbackd pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2' }}
-      GNOME_MOBILE_TAG: ${{ github.event.inputs.GNOME_MOBILE_TAG || '51.1.mobile.3' }}
+      UBUNTU_PACKAGES: ${{ github.event.inputs.UBUNTU_PACKAGES || 'systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus dbus-user-session libpam-systemd libnss-systemd phosh phrog phosh-osk-stevia greetd gnome-session-bin gnome-session-common gnome-settings-daemon gnome-shell-common gnome-keyring gnome-bluetooth-sendto feedbackd callaudiod mmsd-tng network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-lato fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2' }}
       # init-rootfs.c 用 ext4 label "rootfs" 作为 UUID 失配后的兜底，不要随便改。
       ROOTFS_LABEL: rootfs
 
@@ -778,24 +805,15 @@ jobs:
             exit 1
           fi
           if [ "$UBUNTU_DESKTOP_USER" = "root" ]; then
-            echo "::error::UBUNTU_DESKTOP_USER 不能是 root（GDM 不允许 root 图形会话）"
+            echo "::error::UBUNTU_DESKTOP_USER 不能是 root（Phosh/greetd 不允许 root 图形会话）"
             exit 1
           fi
           case "$DESKTOP_PASSWORD" in
             *:*) echo "::error::DESKTOP_PASSWORD 不能包含冒号"; exit 1 ;;
           esac
           test -n "$UBUNTU_PACKAGES" || { echo "::error::UBUNTU_PACKAGES 不能为空"; exit 1; }
-          if ! [[ "$GNOME_MOBILE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-            echo "::error::GNOME_MOBILE_TAG 不合法：$GNOME_MOBILE_TAG"
-            exit 1
-          fi
-          # 提前确认三个仓库都有这个 tag，避免装完包才在编译阶段失败。
-          for repo in mutter-mobile gnome-settings-daemon-mobile gnome-shell-mobile; do
-            git ls-remote --exit-code --tags "$GNOME_MOBILE_GITLAB/$repo.git" "refs/tags/$GNOME_MOBILE_TAG" >/dev/null \
-              || { echo "::error::$repo 缺少 tag $GNOME_MOBILE_TAG"; exit 1; }
-          done
           echo "ubuntu rootfs: size=$UBUNTU_ROOTFS_SIZE hostname=$ROOTFS_HOSTNAME label=$ROOTFS_LABEL"
-          echo "gnome shell mobile tag: $GNOME_MOBILE_TAG"
+          echo "desktop: Phosh (package-based, no source build)"
           echo "desktop user: $UBUNTU_DESKTOP_USER"
           echo "packages: $UBUNTU_PACKAGES"
 
@@ -803,7 +821,7 @@ jobs:
         run: |
           set -euo pipefail
           # GitHub runner 预装的 Android SDK / .NET / GHC 等与本构建无关；
-          # Ubuntu GNOME rootfs + 源码编译需要更多可用空间。
+          # Ubuntu Phosh rootfs 需要更多可用空间。
           sudo rm -rf \
             /usr/local/lib/android \
             /usr/share/dotnet \
@@ -825,28 +843,29 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            wget curl git ca-certificates \
+            wget curl ca-certificates \
             e2fsprogs util-linux rsync \
             libarchive-tools android-sdk-libsparse-utils
           bsdtar --version
           img2simg 2>&1 | head -1 || true
 
-      - name: Download and extract Ubuntu 26.10 arm64 base
+      - name: Download and extract Ubuntu 26.04 arm64 base
         run: |
           set -euo pipefail
-          wget -q --show-progress --tries=3 --timeout=60 -O ubuntu-base-26.10-arm64.tar.gz "$UBUNTU_BASE_TARBALL" \
-            || wget -q --show-progress --tries=3 --timeout=60 -O ubuntu-base-26.10-arm64.tar.gz "$UBUNTU_BASE_TARBALL_FALLBACK"
-          echo "$UBUNTU_BASE_TARBALL_SHA256  ubuntu-base-26.10-arm64.tar.gz" | sha256sum -c -
+          wget -q --show-progress --tries=3 --timeout=60 -O ubuntu-base-26.04-arm64.tar.gz "$UBUNTU_BASE_TARBALL" \
+            || wget -q --show-progress --tries=3 --timeout=60 -O ubuntu-base-26.04-arm64.tar.gz "$UBUNTU_BASE_TARBALL_FALLBACK"
+          echo "$UBUNTU_BASE_TARBALL_SHA256  ubuntu-base-26.04-arm64.tar.gz" | sha256sum -c -
           mkdir -p rootfs
           # bsdtar 显式保留 ACL / xattr（file capabilities）；普通 tar 会丢。
-          sudo bsdtar --acls --xattrs -xpf ubuntu-base-26.10-arm64.tar.gz -C rootfs
+          sudo bsdtar --acls --xattrs -xpf ubuntu-base-26.04-arm64.tar.gz -C rootfs
           test -x rootfs/bin/bash
           # rootfs 目录本身是 runner 用户创建的；bsdtar 只改归档内条目的属主，
           # 不会把目录自身改成 root。chroot 后 `/` 会显示 UID 1001，
           # systemd-tmpfiles 会判定 unsafe path transition 并以非零退出，
           # 导致大量 postinst 失败，所以必须把 rootfs 顶层属主改回 root。
           sudo chown 0:0 rootfs
-          rm -f ubuntu-base-26.10-arm64.tar.gz
+          sudo chmod 0755 rootfs
+          rm -f ubuntu-base-26.04-arm64.tar.gz
           ls -ld rootfs rootfs/usr rootfs/etc
 
       - name: Write Ubuntu rootfs setup script
@@ -862,7 +881,7 @@ jobs:
           [ "$(dpkg --print-architecture)" = "arm64" ] \
             || { echo "::error::chroot 不是 arm64"; exit 1; }
 
-          echo "=== [1/9] 配置 Ubuntu apt 源（arm64 ports + deb-src） ==="
+          echo "=== [1/7] 配置 Ubuntu apt 源（arm64 ports + deb-src） ==="
           cat > /etc/apt/sources.list.d/ubuntu.sources <<EOF
           Types: deb deb-src
           URIs: http://ports.ubuntu.com/ubuntu-ports
@@ -878,131 +897,40 @@ jobs:
 
           apt-get update
 
-          echo "=== [2/9] 安装 GNOME Shell Mobile 运行所需软件包 ==="
+          echo "=== [2/7] 安装 Phosh 及移动端组件 ==="
           # ubuntu-base 只带 libsystemd0，没有 systemd / systemctl / /sbin/init，
           # 必须显式安装 systemd + systemd-sysv，否则镜像无法启动。
           #
-          # Ubuntu 26.10 起默认 D-Bus 实现改为 dbus-broker，dbus / dbus-daemon
-          # 已降级到 universe，桌面也不需要 legacy 实现。这里统一使用 main 里的
-          # dbus-broker + dbus-user-session；即使用户在 UBUNTU_PACKAGES 里写了
-          # legacy 的 dbus / dbus-daemon，也自动剔除。
+          # Ubuntu 仓库没有 gnome-shell-mobile；这里全部使用 Phosh 二进制包。
+          # phrog/phosh-session 会调用 dbus-run-session，Ubuntu 26.04 里它由
+          # dbus/dbus-daemon 提供，所以显式安装 dbus + dbus-user-session。
           read -r -a requested_pkgs <<< "$ROOTFS_PACKAGES"
           ubuntu_pkgs=()
           for pkg in "${requested_pkgs[@]}"; do
-            case "$pkg" in
-              dbus|dbus-daemon)
-                echo "WARNING: Ubuntu 26.10 不再使用 legacy $pkg，改用 dbus-broker"
-                ;;
-              *)
-                ubuntu_pkgs+=("$pkg")
-                ;;
+            ubuntu_pkgs+=("$pkg")
+          done
+          # 用户自定义包列表可能漏掉 Phosh 核心组件；桌面必须依赖它们。
+          for pkg in phosh phrog phosh-osk-stevia greetd dbus dbus-user-session; do
+            case " ${ubuntu_pkgs[*]} " in
+              *" $pkg "*) ;;
+              *) ubuntu_pkgs+=("$pkg") ;;
             esac
           done
-          # 用户自定义包列表可能没有带 D-Bus；桌面必须依赖它们。
-          ubuntu_pkgs+=(dbus-broker dbus-bin dbus-user-session)
           apt-get install -y --no-install-recommends "${ubuntu_pkgs[@]}"
 
-          echo "=== [3/9] 安装构建依赖（mutter / gnome-shell / gnome-settings-daemon） ==="
-          dpkg-query -W -f='${binary:Package}\n' | sort -u > /root/pkgs-before-build.txt
-          apt-get install -y --no-install-recommends git meson ninja-build
-          apt-get -o APT::Get::Build-Dep-Automatic=true build-dep -y \
-            mutter gnome-shell gnome-settings-daemon
-          dpkg-query -W -f='${binary:Package}\n' | sort -u > /root/pkgs-after-build.txt
-          comm -13 /root/pkgs-before-build.txt /root/pkgs-after-build.txt > /root/build-deps.list
-          echo "构建期新增包数量：$(wc -l < /root/build-deps.list)"
+          echo "=== [3/7] 校验 Phosh 桌面组件 ==="
+          test -x /usr/bin/phosh
+          test -x /usr/bin/phoc
+          test -x /usr/bin/phrog
+          test -x /usr/bin/dbus-run-session
+          test -f /usr/share/wayland-sessions/phosh.desktop
+          test -f /usr/share/gnome-session/sessions/phosh.session
+          test -f /etc/greetd/phrog.toml
+          echo "phosh: $(dpkg-query -W -f='${Version}' phosh)"
+          echo "phrog: $(dpkg-query -W -f='${Version}' phrog)"
+          echo "phosh-osk-stevia: $(dpkg-query -W -f='${Version}' phosh-osk-stevia)"
 
-          echo "=== [4/9] 源码构建并安装 mutter-mobile（移动端手势/旋屏） ==="
-          mkdir -p /root/src
-          cd /root/src
-          git clone --depth 1 --branch "$GNOME_MOBILE_TAG" \
-            "${GNOME_MOBILE_GITLAB}/mutter-mobile.git"
-          cd mutter-mobile
-          meson setup build --prefix=/usr --libdir=lib/aarch64-linux-gnu --buildtype=release \
-            -Dstrip=true -Dtests=false -Dcogl_tests=false -Dclutter_tests=false \
-            -Dmutter_tests=false -Ddocs=false
-          ninja -C build
-          ninja -C build install
-          ldconfig
-          cd /root/src
-
-          echo "=== [5/9] 源码构建并安装 gnome-settings-daemon-mobile ==="
-          git clone --depth 1 --branch "$GNOME_MOBILE_TAG" \
-            "${GNOME_MOBILE_GITLAB}/gnome-settings-daemon-mobile.git"
-          cd gnome-settings-daemon-mobile
-          meson setup build --prefix=/usr --libdir=lib/aarch64-linux-gnu --buildtype=release \
-            -Dstrip=true -Dsystemd=true -Dsystemd-units=true -Dcups=false
-          ninja -C build
-          ninja -C build install
-          ldconfig
-          cd /root/src
-
-          echo "=== [6/9] 源码构建并安装 gnome-shell-mobile（手机 shell） ==="
-          git clone --depth 1 --branch "$GNOME_MOBILE_TAG" \
-            "${GNOME_MOBILE_GITLAB}/gnome-shell-mobile.git"
-          cd gnome-shell-mobile
-          meson setup build --prefix=/usr --libdir=lib/aarch64-linux-gnu --buildtype=release \
-            -Dstrip=true -Dtests=false -Dgtk_doc=false -Dman=false -Dextensions_tool=true \
-            -Dnetworkmanager=true -Dportal_helper=true -Dsystemd=true -Dcamera_monitor=true
-          ninja -C build
-          ninja -C build install
-          ldconfig
-          cd /root/src
-          glib-compile-schemas /usr/share/glib-2.0/schemas || true
-
-          echo "=== [7/9] 清理构建依赖并恢复自编译文件 ==="
-          # Ubuntu 26.10 的 build-dep 可能为测试把 legacy dbus / dbus-daemon 拉回来；
-          # 最终镜像统一使用 dbus-broker，这里先剔除，再走 autoremove。
-          apt-get purge -y dbus dbus-daemon >/dev/null 2>&1 || true
-          if [ -s /root/build-deps.list ]; then
-            # 把构建期新增包标记为 auto 后再 autoremove；运行期手动安装的包
-            # 及其依赖不会被误删，只清掉纯构建依赖。
-            mapfile -t build_pkgs < <(sed 's/:.*$//' /root/build-deps.list | sort -u)
-            if [ "${#build_pkgs[@]}" -gt 0 ]; then
-              apt-mark auto "${build_pkgs[@]}" >/dev/null 2>&1 || true
-            fi
-          fi
-          # 保留 meson/ninja，下面要用它们重装被 autoremove 清掉的文件。
-          apt-mark manual meson ninja-build >/dev/null 2>&1 || true
-          apt-get autoremove --purge -y || true
-
-          # autoremove 可能删掉与 -dev 包同路径的自编译文件，重装一遍，
-          # 保证最终状态是 mobile 版本。必须 --no-rebuild：autoremove 后
-          # libglib2.0-dev 的 .so 链接可能已删除，ninja install 会尝试重建
-          # 测试目标并失败；meson install --no-rebuild 只从 build 目录恢复文件。
-          meson install -C /root/src/mutter-mobile/build --no-rebuild
-          meson install -C /root/src/gnome-settings-daemon-mobile/build --no-rebuild
-          meson install -C /root/src/gnome-shell-mobile/build --no-rebuild
-          ldconfig
-          glib-compile-schemas /usr/share/glib-2.0/schemas || true
-
-          # 构建工具不再需要。
-          apt-get purge -y meson ninja-build >/dev/null 2>&1 || true
-          apt-get autoremove --purge -y || true
-
-          # 防止 apt 升级时把 mobile 组件覆盖回发行版版本。
-          for p in gnome-shell gnome-shell-common mutter mutter-common libmutter-51-0 \
-                   gir1.2-mutter-51 gnome-settings-daemon gnome-settings-daemon-common; do
-            apt-mark hold "$p" >/dev/null 2>&1 || true
-          done
-
-          echo "=== [8/9] 校验 GNOME Shell Mobile ==="
-          gnome-shell --version > /root/gnome-shell-mobile-version.txt 2>&1 || true
-          cat /root/gnome-shell-mobile-version.txt
-          grep -q "$GNOME_MOBILE_TAG" /root/gnome-shell-mobile-version.txt \
-            || { echo "::error::gnome-shell 版本不是 $GNOME_MOBILE_TAG"; exit 1; }
-          test -e /usr/lib/aarch64-linux-gnu/libmutter-51.so.0 \
-            || { echo "::error::缺少 libmutter-51.so.0"; exit 1; }
-          test -e /usr/lib/aarch64-linux-gnu/girepository-1.0/Mutter-51.typelib \
-            || { echo "::error::缺少 Mutter-51.typelib"; exit 1; }
-          gsd_wwan="$(find /usr/libexec /usr/lib/aarch64-linux-gnu -maxdepth 3 \
-            -name 'gsd-wwan*' -print -quit 2>/dev/null || true)"
-          if [ -z "$gsd_wwan" ]; then
-            echo "WARNING: 没找到 gsd-wwan（gnome-settings-daemon-mobile）"
-          else
-            echo "gsd-wwan: $gsd_wwan"
-          fi
-
-          echo "=== [9/9] 系统配置与清理 ==="
+          echo "=== [4/7] 系统配置与清理 ==="
           printf '%s\n' "$ROOTFS_HOSTNAME" > /etc/hostname
           cat > /etc/hosts <<HOSTS_EOF
           127.0.0.1       localhost
@@ -1028,9 +956,14 @@ jobs:
 
           printf 'root:%s\n' "$ROOTFS_PASSWORD" | chpasswd
 
-          # 桌面用户；Ubuntu 的管理员组是 sudo。
+          # 桌面用户；Ubuntu 的管理员组是 sudo。Phosh 常用 UID 1000，
+          # 这里在 UID 空闲时优先分配 1000。
           if ! id "$ROOTFS_DESKTOP_USER" >/dev/null 2>&1; then
-            useradd -m -s /bin/bash "$ROOTFS_DESKTOP_USER"
+            if getent passwd 1000 >/dev/null 2>&1; then
+              useradd -m -s /bin/bash "$ROOTFS_DESKTOP_USER"
+            else
+              useradd -m -u 1000 -s /bin/bash "$ROOTFS_DESKTOP_USER"
+            fi
           fi
           for grp in sudo adm audio video input render bluetooth plugdev netdev lpadmin scanner; do
             if getent group "$grp" >/dev/null; then
@@ -1050,7 +983,7 @@ jobs:
             # 由包默认启用，配合 /etc/machine-id 缺失（首次开机）自动执行。
             rm -f /etc/ssh/ssh_host_*
             systemctl enable sshd-keygen.service 2>/dev/null || true
-            # Ubuntu 26.10 默认 socket 激活；只有没启用 socket 时才启用 service。
+            # Ubuntu 26.04 默认 socket 激活；只有没启用 socket 时才启用 service。
             if [ -L /etc/systemd/system/sockets.target.wants/ssh.socket ]; then
               echo "ssh.socket 已由包默认启用"
             else
@@ -1067,20 +1000,15 @@ jobs:
           done
           systemctl enable iio-sensor-proxy.service 2>/dev/null || true
           systemctl enable serial-getty@ttyS0.service 2>/dev/null || true
+          # greetd 用 vt7，和 getty@tty7 冲突；tty1 的 getty 也不需要。
           systemctl disable getty@tty1.service 2>/dev/null || true
+          systemctl disable getty@tty7.service 2>/dev/null || true
 
-          # GDM 用 Wayland；GNOME Shell Mobile 的 mobile 布局也跑在 Wayland 上。
-          install -d -m 755 /etc/gdm3
-          cat > /etc/gdm3/custom.conf <<'GDM_EOF'
-          [daemon]
-          WaylandEnable=true
-          GDM_EOF
-          chmod 644 /etc/gdm3/custom.conf
-
-          if systemctl enable gdm.service 2>/dev/null || systemctl enable gdm3.service 2>/dev/null; then
-            echo "display manager: gdm enabled"
+          # Phosh 跑 Wayland；phrog 是 greetd 的触摸 greeter，由 greetd 拉起。
+          if systemctl enable greetd.service 2>/dev/null; then
+            echo "display manager: greetd/phrog enabled"
           else
-            echo "::error::无法启用 gdm.service / gdm3.service"
+            echo "::error::无法启用 greetd.service"
             exit 1
           fi
           systemctl set-default graphical.target \
@@ -1111,13 +1039,12 @@ jobs:
           apt-get clean
           rm -rf /var/lib/apt/lists/*
           rm -rf /var/cache/apt/archives/*
-          rm -rf /root/src
           rm -f /root/pkgs-before-build.txt /root/pkgs-after-build.txt /root/build-deps.list
           rm -rf /var/log/journal/*
           find /var/log -type f -exec truncate -s 0 {} + 2>/dev/null || true
           mkdir -p /var/lib/apt/lists/partial /var/cache/apt/archives/partial
 
-          echo "Ubuntu 26.10 GNOME Shell Mobile rootfs setup done"
+          echo "Ubuntu 26.04 Phosh rootfs setup done"
           EOS
           sudo chmod +x rootfs/root/setup-ubuntu-rootfs.sh
 
@@ -1168,8 +1095,6 @@ jobs:
             ROOTFS_DESKTOP_USER="$UBUNTU_DESKTOP_USER" \
             ROOTFS_DESKTOP_PASSWORD="${DESKTOP_PASSWORD:-$ROOT_PASSWORD}" \
             ROOTFS_PACKAGES="$UBUNTU_PACKAGES" \
-            GNOME_MOBILE_TAG="$GNOME_MOBILE_TAG" \
-            GNOME_MOBILE_GITLAB="$GNOME_MOBILE_GITLAB" \
             /bin/bash /root/setup-ubuntu-rootfs.sh
 
           cleanup
@@ -1255,20 +1180,19 @@ jobs:
             fi
           done
 
-          # GNOME Shell Mobile：必须是源码构建的那个 tag，而不是发行版 51.0。
-          grep -q "$GNOME_MOBILE_TAG" rootfs/root/gnome-shell-mobile-version.txt \
-            || { echo "::error::gnome-shell 不是 GNOME Shell Mobile $GNOME_MOBILE_TAG"; exit 1; }
-          cat rootfs/root/gnome-shell-mobile-version.txt
-          test -e rootfs/usr/lib/aarch64-linux-gnu/libmutter-51.so.0
-          test -e rootfs/usr/lib/aarch64-linux-gnu/girepository-1.0/Mutter-51.typelib
-          test -x rootfs/usr/bin/gnome-shell
-          test -f rootfs/usr/share/wayland-sessions/gnome.desktop \
-            || { echo "::error::缺少 GNOME Wayland 会话文件"; exit 1; }
+          # Phosh：必须是仓库二进制包，并且桌面组件齐全。
+          test -x rootfs/usr/bin/phosh
+          test -x rootfs/usr/bin/phoc
+          test -x rootfs/usr/bin/phrog
+          test -x rootfs/usr/bin/dbus-run-session
+          test -f rootfs/usr/share/wayland-sessions/phosh.desktop
+          test -f rootfs/usr/share/gnome-session/sessions/phosh.session
+          test -f rootfs/etc/greetd/phrog.toml
 
           test -L rootfs/etc/systemd/system/display-manager.service \
             || { echo "::error::display-manager.service 未启用"; exit 1; }
-          readlink rootfs/etc/systemd/system/display-manager.service | grep -q 'gdm' \
-            || { echo "::error::display-manager.service 不是 gdm"; exit 1; }
+          readlink rootfs/etc/systemd/system/display-manager.service | grep -q 'greetd' \
+            || { echo "::error::display-manager.service 不是 greetd"; exit 1; }
           readlink rootfs/etc/systemd/system/default.target | grep -q 'graphical.target' \
             || { echo "::error::默认 systemd target 不是 graphical.target"; exit 1; }
 
@@ -1284,13 +1208,6 @@ jobs:
             *) echo "::error::桌面用户不在 sudo 组"; exit 1 ;;
           esac
 
-          # 确认覆盖安装的发行版包已 hold，避免 apt upgrade 把 mobile 组件覆盖回去。
-          if grep -A1 '^Package: gnome-shell$' rootfs/var/lib/dpkg/status | grep -q 'Status: hold'; then
-            echo "gnome-shell is held"
-          else
-            echo "WARNING: gnome-shell 未被 apt hold"
-          fi
-
           if [ -L rootfs/etc/systemd/system/multi-user.target.wants/ssh.service ] \
             || [ -L rootfs/etc/systemd/system/sockets.target.wants/ssh.socket ]; then
             echo "ssh enabled"
@@ -1300,7 +1217,6 @@ jobs:
           test -L rootfs/etc/systemd/system/multi-user.target.wants/NetworkManager.service \
             || echo "WARNING: NetworkManager 未设置开机自启"
 
-          sudo rm -f rootfs/root/gnome-shell-mobile-version.txt
           echo "--- /sbin/init ---"
           ls -l rootfs/sbin/init
           echo "--- modules ---"
@@ -1365,10 +1281,10 @@ jobs:
           ls -lh ubuntu-rootfs.img ubuntu-rootfs-sparse.img
           du -h ubuntu-rootfs.img ubuntu-rootfs-sparse.img
 
-      - name: Upload Ubuntu 26.10 ARM64 rootfs (sparse)
+      - name: Upload Ubuntu 26.04 ARM64 rootfs (sparse)
         uses: actions/upload-artifact@v4
         with:
-          name: ubuntu-26.10-rootfs
+          name: ubuntu-26.04-rootfs
           path: |
             ubuntu-rootfs-sparse.img
             ubuntu-rootfs-sparse.img.sha256
@@ -1379,7 +1295,7 @@ jobs:
         if: ${{ github.event.inputs.UPLOAD_RAW_IMG == 'true' || github.event.inputs.UPLOAD_RAW_IMG == true }}
         uses: actions/upload-artifact@v4
         with:
-          name: ubuntu-26.10-rootfs-raw
+          name: ubuntu-26.04-rootfs-raw
           path: ubuntu-rootfs.img
           if-no-files-found: error
           compression-level: 0
@@ -1387,19 +1303,18 @@ jobs:
       - name: Write job summary
         run: |
           {
-            echo "## Ubuntu 26.10 ARM64 rootfs (GNOME Shell Mobile)"
+            echo "## Ubuntu 26.04 ARM64 rootfs (Phosh)"
             echo ""
             echo "| 项目 | 值 |"
             echo "|------|----|"
             echo "| 构建环境 | GitHub 原生 arm64（\`ubuntu-24.04-arm\`） |"
-            echo "| 发行版 | Ubuntu 26.10（Stonking Stingray, \`$UBUNTU_SUITE\`）arm64 |"
-            echo "| 桌面环境 | GNOME Shell Mobile + GDM（Wayland） |"
-            echo "| GNOME Shell Mobile tag | \`$GNOME_MOBILE_TAG\`（源码构建 mutter / gsd / shell） |"
+            echo "| 发行版 | Ubuntu 26.04 LTS（Resolute Raccoon, \`$UBUNTU_SUITE\`）arm64 |"
+            echo "| 桌面环境 | Phosh + phrog + Stevia OSK（Wayland，仓库二进制包） |"
             echo "| 桌面用户 | \`$UBUNTU_DESKTOP_USER\` |"
             echo "| 镜像大小 | \`$UBUNTU_ROOTFS_SIZE\` |"
             echo "| ext4 label | \`$ROOTFS_LABEL\` |"
             echo "| 主机名 | \`$ROOTFS_HOSTNAME\` |"
-            echo "| 移动端适配 | mobile 布局 + 手机 OSK + 自动旋转（iio-sensor-proxy） |"
+            echo "| 移动端适配 | Phosh 手机 shell + 触摸键盘 + 自动旋转（iio-sensor-proxy） |"
             echo "| 固件 | 未安装（按设计） |"
             echo "| 内核模块 | 未安装（按设计） |"
             echo ""
@@ -1410,8 +1325,7 @@ jobs:
             echo "刷写：把 \`ubuntu-rootfs-sparse.img\` 刷到 GPT 名为 \`rootfs\` 的分区，"
             echo "或 \`fastboot flash <rootfs 分区> ubuntu-rootfs-sparse.img\`。"
             echo ""
-            echo "注意：mutter / gnome-settings-daemon / gnome-shell 已被源码构建的 mobile 版本覆盖，"
-            echo "对应发行版包已 \`apt-mark hold\`，避免 \`apt upgrade\` 覆盖回去。"
+            echo "注意：本 job 使用 Ubuntu 仓库 Phosh 二进制包，不源码编译 GNOME Shell Mobile。"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ==========================================================
@@ -1542,6 +1456,11 @@ jobs:
           # Fedora 44 的 dnf 可能是 dnf5 的别名。
           test -x rootfs/usr/bin/dnf -o -x rootfs/usr/bin/dnf5
           rm -f rootfs/.dockerenv
+          # rootfs 目录本身是 runner 用户创建的；docker export/bsdtar 不会把目录
+          # 自身属主改成 root。chroot/首次开机后 `/` 属主不对会让 systemd-tmpfiles
+          # 报 unsafe path transition，进而影响 greetd/phrog 等 tmpfiles 相关服务。
+          sudo chown 0:0 rootfs
+          sudo chmod 0755 rootfs
           ls -ld rootfs rootfs/usr rootfs/etc
 
       - name: Write Fedora rootfs setup script
@@ -1673,6 +1592,10 @@ jobs:
           rm -f /.autorelabel
 
           echo "=== [5/8] 基础系统配置 ==="
+          # Fedora container base 可能把 /etc/hostname、/etc/hosts、/etc/fstab
+          # 做成指向 /dev/null 的符号链接；直接 cat > 只会写进 /dev/null，
+          # 后面 test -f 会失败。先删掉再写普通文件。
+          rm -f /etc/hostname /etc/hosts /etc/fstab
           printf '%s\n' "$ROOTFS_HOSTNAME" > /etc/hostname
           cat > /etc/hosts <<HOSTS_EOF
           127.0.0.1       localhost
@@ -1776,6 +1699,12 @@ jobs:
         run: |
           set -euo pipefail
           # runner 本身是 aarch64，chroot 可直接执行 Fedora arm64 的二进制。
+          # 顶层属主必须是 root：否则 systemd-tmpfiles 会报 unsafe path transition。
+          rootfs_owner="$(stat -c '%u' rootfs)"
+          [ "$rootfs_owner" = 0 ] || {
+            echo "::error::rootfs 顶层属主不是 root：UID=$rootfs_owner"
+            exit 1
+          }
           sudo rm -f rootfs/etc/resolv.conf
           sudo cp /etc/resolv.conf rootfs/etc/resolv.conf
           # 宿主机若用 systemd-resolved stub，chroot 里没有该服务，换公共 DNS。
@@ -1861,6 +1790,7 @@ jobs:
       - name: Verify Fedora rootfs
         run: |
           set -euo pipefail
+          trap 'echo "::error::Verify Fedora rootfs failed at line $LINENO"' ERR
           if [ ! -e rootfs/sbin/init ] && [ ! -L rootfs/sbin/init ] && [ -e rootfs/usr/lib/systemd/systemd ]; then
             echo "WARNING: /sbin/init 缺失，补一个到 systemd 的软链接"
             sudo mkdir -p rootfs/sbin
@@ -1875,10 +1805,14 @@ jobs:
             *systemd*) echo "/sbin/init -> $init_target" ;;
             *) echo "::error::/sbin/init 未指向 systemd：$init_target"; exit 1 ;;
           esac
-          test -f rootfs/etc/fstab
-          grep -q '^LABEL=rootfs' rootfs/etc/fstab
-          test -f rootfs/etc/hostname
-          test -f rootfs/etc/hosts
+          test -f rootfs/etc/fstab \
+            || { echo "::error::rootfs/etc/fstab 缺失或不是普通文件"; ls -ld rootfs/etc/fstab || true; exit 1; }
+          grep -q '^LABEL=rootfs' rootfs/etc/fstab \
+            || { echo "::error::rootfs/etc/fstab 缺少 LABEL=rootfs"; sed -n '1,20p' rootfs/etc/fstab; exit 1; }
+          test -f rootfs/etc/hostname \
+            || { echo "::error::rootfs/etc/hostname 缺失或不是普通文件"; ls -ld rootfs/etc/hostname || true; exit 1; }
+          test -f rootfs/etc/hosts \
+            || { echo "::error::rootfs/etc/hosts 缺失或不是普通文件"; ls -ld rootfs/etc/hosts || true; exit 1; }
 
           # 不安装设备固件：除 wireless-regdb 的监管数据库外，不允许固件包或固件文件。
           # wireless-regdb 是 NetworkManager-wifi 的硬依赖，只有 regulatory.db{,.p7s}。
@@ -1912,14 +1846,20 @@ jobs:
           done
 
           # Phosh 手机桌面：shell、合成器、触摸登录器、屏幕键盘必须齐全。
-          test -x rootfs/usr/bin/phosh-session
-          test -x rootfs/usr/bin/phoc
-          test -x rootfs/usr/bin/phrog
+          test -x rootfs/usr/bin/phosh-session \
+            || { echo "::error::缺少 /usr/bin/phosh-session"; exit 1; }
+          test -x rootfs/usr/bin/phoc \
+            || { echo "::error::缺少 /usr/bin/phoc"; exit 1; }
+          test -x rootfs/usr/bin/phrog \
+            || { echo "::error::缺少 /usr/bin/phrog"; exit 1; }
           test -f rootfs/usr/share/wayland-sessions/phosh.desktop \
             || { echo "::error::缺少 Phosh Wayland 会话文件"; exit 1; }
-          test -f rootfs/usr/share/gnome-session/sessions/phosh.session
-          test -f rootfs/usr/lib/systemd/system/phrog.service
-          test -f rootfs/root/fedora-phosh-version.txt
+          test -f rootfs/usr/share/gnome-session/sessions/phosh.session \
+            || { echo "::error::缺少 phosh.session"; exit 1; }
+          test -f rootfs/usr/lib/systemd/system/phrog.service \
+            || { echo "::error::缺少 phrog.service"; exit 1; }
+          test -f rootfs/root/fedora-phosh-version.txt \
+            || { echo "::error::缺少 fedora-phosh-version.txt"; exit 1; }
           cat rootfs/root/fedora-phosh-version.txt
           grep -q '^phosh-' rootfs/root/fedora-phosh-version.txt \
             || { echo "::error::Phosh 未正确安装"; exit 1; }
