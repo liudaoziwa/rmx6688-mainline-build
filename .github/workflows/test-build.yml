@@ -16,8 +16,9 @@ name: build-kernel-and-rootfs
 #     和 konsole 图形终端，可用 INSTALL_KDE=false 回到 headless；
 #   - Ubuntu job 安装 Ubuntu 26.04 arm64 + Phosh：全部使用 Ubuntu 仓库二进制包
 #     （phosh / phrog / phosh-osk-stevia / phoc / greetd），不源码编译
-#     GNOME Shell Mobile；安装 iio-sensor-proxy（自动旋转）、ModemManager
-#     （蜂窝网络）、feedbackd / callaudiod 等移动端组件。
+#     GNOME Shell Mobile；安装 phosh-mobile-settings / phosh-plugins /
+#     phosh-mobile-tweaks，并给 DSI-1 设置 scale=2；安装 iio-sensor-proxy
+#     （自动旋转）、ModemManager（蜂窝网络）、feedbackd / callaudiod 等移动端组件。
 #   - Fedora job 安装 Fedora 44 arm64 + Phosh：使用 Fedora 的 phosh-desktop
 #     组安装手机 shell、Stevia 屏幕键盘和 phrog 触摸登录器；默认带 gnome-console
 #     图形终端；同样安装 iio-sensor-proxy、ModemManager、calls/chatty 等移动端组件。
@@ -105,7 +106,7 @@ on:
       UBUNTU_PACKAGES:
         description: "Ubuntu rootfs 安装的包（空格分隔；Phosh 桌面 + 移动端应用，全部用仓库二进制包）"
         required: false
-        default: "systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus dbus-user-session libpam-systemd libnss-systemd phosh phrog phosh-osk-stevia greetd gnome-session-bin gnome-session-common gnome-settings-daemon gnome-shell-common gnome-keyring gnome-bluetooth-sendto feedbackd callaudiod mmsd-tng network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-lato fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2"
+        default: "systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus dbus-user-session libpam-systemd libnss-systemd phosh phrog phosh-osk-stevia phosh-mobile-settings phosh-mobile-tweaks phosh-plugins greetd gnome-session-bin gnome-session-common gnome-settings-daemon gnome-shell-common gnome-keyring gnome-bluetooth-sendto feedbackd callaudiod mmsd-tng network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-lato fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2"
         type: string
       FEDORA_PACKAGES:
         description: "Fedora rootfs 额外安装的包（空格分隔；Phosh 桌面组始终安装）"
@@ -783,7 +784,7 @@ jobs:
       ROOT_PASSWORD: ${{ github.event.inputs.ROOT_PASSWORD || '1234' }}
       UBUNTU_DESKTOP_USER: ${{ github.event.inputs.UBUNTU_DESKTOP_USER || 'ubuntu' }}
       DESKTOP_PASSWORD: ${{ github.event.inputs.DESKTOP_PASSWORD || '' }}
-      UBUNTU_PACKAGES: ${{ github.event.inputs.UBUNTU_PACKAGES || 'systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus dbus-user-session libpam-systemd libnss-systemd phosh phrog phosh-osk-stevia greetd gnome-session-bin gnome-session-common gnome-settings-daemon gnome-shell-common gnome-keyring gnome-bluetooth-sendto feedbackd callaudiod mmsd-tng network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-lato fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2' }}
+      UBUNTU_PACKAGES: ${{ github.event.inputs.UBUNTU_PACKAGES || 'systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus dbus-user-session libpam-systemd libnss-systemd phosh phrog phosh-osk-stevia phosh-mobile-settings phosh-mobile-tweaks phosh-plugins greetd gnome-session-bin gnome-session-common gnome-settings-daemon gnome-shell-common gnome-keyring gnome-bluetooth-sendto feedbackd callaudiod mmsd-tng network-manager modemmanager usb-modeswitch bluez rfkill iio-sensor-proxy geoclue-2.0 pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-lato fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-calls chatty gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2' }}
       # init-rootfs.c 用 ext4 label "rootfs" 作为 UUID 失配后的兜底，不要随便改。
       ROOTFS_LABEL: rootfs
 
@@ -918,7 +919,7 @@ jobs:
             ubuntu_pkgs+=("$pkg")
           done
           # 用户自定义包列表可能漏掉 Phosh 核心组件；桌面必须依赖它们。
-          for pkg in phosh phrog phosh-osk-stevia greetd dbus dbus-user-session; do
+          for pkg in phosh phrog phosh-osk-stevia phosh-mobile-settings phosh-mobile-tweaks phosh-plugins greetd dbus dbus-user-session; do
             case " ${ubuntu_pkgs[*]} " in
               *" $pkg "*) ;;
               *) ubuntu_pkgs+=("$pkg") ;;
@@ -958,6 +959,15 @@ jobs:
           # <device> <mount> <type> <options> <dump> <pass>
           LABEL=rootfs  /  ext4  defaults,noatime,errors=remount-ro  0  1
           FSTAB_EOF
+
+          # Phosh/phoc 默认只对 Virtual/Headless 输出设置 scale=2；真实手机的
+          # DSI 面板不设置时 UI 会偏小。这里给 DSI-1 显式 scale=2，提升可读性。
+          install -d -m 0755 /etc/phosh
+          cat > /etc/phosh/phoc.ini <<'PHOC_EOF'
+          [output:DSI-1]
+          scale = 2
+          PHOC_EOF
+          chmod 0644 /etc/phosh/phoc.ini
 
           sed -i 's/^#\s*en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
           grep -q '^en_US.UTF-8 UTF-8' /etc/locale.gen || echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen
@@ -1215,6 +1225,12 @@ jobs:
             || { echo "::error::缺少 phosh.session"; exit 1; }
           test -f rootfs/etc/greetd/phrog.toml \
             || { echo "::error::缺少 /etc/greetd/phrog.toml"; exit 1; }
+          test -x rootfs/usr/bin/phosh-mobile-settings \
+            || { echo "::error::缺少 phosh-mobile-settings（设置入口）"; exit 1; }
+          test -f rootfs/etc/phosh/phoc.ini \
+            || { echo "::error::缺少 /etc/phosh/phoc.ini（DSI 缩放配置）"; exit 1; }
+          grep -q '^scale = 2$' rootfs/etc/phosh/phoc.ini \
+            || { echo "::error::phoc.ini 未配置 DSI-1 scale=2"; exit 1; }
 
           test -L rootfs/etc/systemd/system/display-manager.service \
             || { echo "::error::display-manager.service 未启用"; exit 1; }
