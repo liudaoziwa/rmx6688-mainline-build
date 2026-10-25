@@ -12,15 +12,15 @@ name: build-kernel-and-rootfs
 #     否则 chroot/首次开机时 `/` 属主是 runner 用户，systemd-tmpfiles 会报
 #     unsafe path transition 并跳过 /var，导致 plasmalogin 等 tmpfiles 相关服务失败；
 #   - rootfs 的 /boot 都清空，内核/initramfs 由外部 boot 分区提供；
-#   - Arch job 默认安装 KDE Plasma Mobile（plasma-mobile + Plasma Login Manager），
-#     可用 INSTALL_KDE=false 回到 headless；
+#   - Arch job 默认安装 KDE Plasma Mobile（plasma-mobile + Plasma Login Manager）
+#     和 konsole 图形终端，可用 INSTALL_KDE=false 回到 headless；
 #   - Ubuntu job 安装 Ubuntu 26.04 arm64 + Phosh：全部使用 Ubuntu 仓库二进制包
 #     （phosh / phrog / phosh-osk-stevia / phoc / greetd），不源码编译
 #     GNOME Shell Mobile；安装 iio-sensor-proxy（自动旋转）、ModemManager
 #     （蜂窝网络）、feedbackd / callaudiod 等移动端组件。
 #   - Fedora job 安装 Fedora 44 arm64 + Phosh：使用 Fedora 的 phosh-desktop
-#     组安装手机 shell、Stevia 屏幕键盘和 phrog 触摸登录器；同样安装
-#     iio-sensor-proxy、ModemManager、calls/chatty 等移动端组件。
+#     组安装手机 shell、Stevia 屏幕键盘和 phrog 触摸登录器；默认带 gnome-console
+#     图形终端；同样安装 iio-sensor-proxy、ModemManager、calls/chatty 等移动端组件。
 #   - 只支持手动 workflow_dispatch 触发，push 不再触发构建。
 #
 # rootfs 的关键约定（来自 init-rootfs.c）：
@@ -32,7 +32,7 @@ on:
   workflow_dispatch:
     inputs:
       TASK:
-        description: "构建任务"
+        description: "archlinux"
         required: true
         default: "仅RootFS"
         type: choice
@@ -73,9 +73,9 @@ on:
         default: true
         type: boolean
       KDE_PACKAGES:
-        description: "KDE Plasma Mobile 桌面包（空格分隔；仅在 INSTALL_KDE=true 时安装）"
+        description: "KDE Plasma Mobile 桌面包（空格分隔；仅在 INSTALL_KDE=true 时安装；默认含 konsole 图形终端）"
         required: false
-        default: "plasma-mobile plasma-settings plasma-login-manager kscreen bluedevil mesa pipewire pipewire-pulse wireplumber noto-fonts-cjk ttf-dejavu alsa-ucm-conf"
+        default: "plasma-mobile plasma-settings plasma-login-manager kscreen bluedevil mesa pipewire pipewire-pulse wireplumber noto-fonts-cjk ttf-dejavu konsole alsa-ucm-conf"
         type: string
       DESKTOP_USER:
         description: "桌面用户名"
@@ -110,7 +110,7 @@ on:
       FEDORA_PACKAGES:
         description: "Fedora rootfs 额外安装的包（空格分隔；Phosh 桌面组始终安装）"
         required: false
-        default: "stevia-phosh-osk-provider gnome-control-center gnome-keyring nautilus gnome-text-editor eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer snapshot gnome-weather gnome-characters gnome-usage mmsd-tng xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-fuse gvfs-mtp power-profiles-daemon upower accountsservice polkit iio-sensor-proxy geoclue2 ModemManager usb_modeswitch bluez bluez-tools callaudiod pipewire pipewire-pulseaudio wireplumber alsa-ucm pipewire-alsa mesa-dri-drivers mesa-vulkan-drivers NetworkManager-wifi wpa_supplicant iwd openssh-server sudo vim-minimal less curl wget2-wget ca-certificates htop tzdata glibc-langpack-en chrony systemd systemd-resolved dbus dbus-broker dbus-daemon google-noto-sans-cjk-fonts google-noto-serif-cjk-fonts google-noto-color-emoji-fonts dejavu-sans-fonts"
+        default: "stevia-phosh-osk-provider gnome-control-center gnome-keyring nautilus gnome-text-editor gnome-console eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer snapshot gnome-weather gnome-characters gnome-usage mmsd-tng xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-fuse gvfs-mtp power-profiles-daemon upower accountsservice polkit iio-sensor-proxy geoclue2 ModemManager usb_modeswitch bluez bluez-tools callaudiod pipewire pipewire-pulseaudio wireplumber alsa-ucm pipewire-alsa mesa-dri-drivers mesa-vulkan-drivers NetworkManager-wifi wpa_supplicant iwd openssh-server sudo vim-minimal less curl wget2-wget ca-certificates htop tzdata glibc-langpack-en chrony systemd systemd-resolved dbus dbus-broker dbus-daemon google-noto-sans-cjk-fonts google-noto-serif-cjk-fonts google-noto-color-emoji-fonts dejavu-sans-fonts"
         type: string
       UPLOAD_RAW_IMG:
         description: "同时上传未压缩的 rootfs.img（体积大）"
@@ -202,7 +202,7 @@ jobs:
       ROOTFS_HOSTNAME: ${{ github.event.inputs.ROOTFS_HOSTNAME || 'rmx6688' }}
       ROOT_PASSWORD: ${{ github.event.inputs.ROOT_PASSWORD || '1234' }}
       INSTALL_KDE: ${{ github.event.inputs.INSTALL_KDE || 'true' }}
-      KDE_PACKAGES: ${{ github.event.inputs.KDE_PACKAGES || 'plasma-mobile plasma-settings plasma-login-manager kscreen bluedevil mesa pipewire pipewire-pulse wireplumber noto-fonts-cjk ttf-dejavu alsa-ucm-conf' }}
+      KDE_PACKAGES: ${{ github.event.inputs.KDE_PACKAGES || 'plasma-mobile plasma-settings plasma-login-manager kscreen bluedevil mesa pipewire pipewire-pulse wireplumber noto-fonts-cjk ttf-dejavu konsole alsa-ucm-conf' }}
       DESKTOP_USER: ${{ github.event.inputs.DESKTOP_USER || 'arch' }}
       DESKTOP_PASSWORD: ${{ github.event.inputs.DESKTOP_PASSWORD || '' }}
       EXTRA_PACKAGES: ${{ github.event.inputs.EXTRA_PACKAGES || 'networkmanager wpa_supplicant iwd openssh sudo vim less curl wget ca-certificates htop bluez bluez-utils iw tzdata' }}
@@ -919,13 +919,20 @@ jobs:
           apt-get install -y --no-install-recommends "${ubuntu_pkgs[@]}"
 
           echo "=== [3/7] 校验 Phosh 桌面组件 ==="
-          test -x /usr/bin/phosh
-          test -x /usr/bin/phoc
-          test -x /usr/bin/phrog
-          test -x /usr/bin/dbus-run-session
-          test -f /usr/share/wayland-sessions/phosh.desktop
-          test -f /usr/share/gnome-session/sessions/phosh.session
-          test -f /etc/greetd/phrog.toml
+          test -x /usr/bin/phosh-session \
+            || { echo "::error::缺少 /usr/bin/phosh-session"; exit 1; }
+          test -x /usr/bin/phoc \
+            || { echo "::error::缺少 /usr/bin/phoc"; exit 1; }
+          test -x /usr/bin/phrog \
+            || { echo "::error::缺少 /usr/bin/phrog"; exit 1; }
+          test -x /usr/bin/dbus-run-session \
+            || { echo "::error::缺少 /usr/bin/dbus-run-session"; exit 1; }
+          test -f /usr/share/wayland-sessions/phosh.desktop \
+            || { echo "::error::缺少 phosh.desktop"; exit 1; }
+          test -f /usr/share/gnome-session/sessions/phosh.session \
+            || { echo "::error::缺少 phosh.session"; exit 1; }
+          test -f /etc/greetd/phrog.toml \
+            || { echo "::error::缺少 /etc/greetd/phrog.toml"; exit 1; }
           echo "phosh: $(dpkg-query -W -f='${Version}' phosh)"
           echo "phrog: $(dpkg-query -W -f='${Version}' phrog)"
           echo "phosh-osk-stevia: $(dpkg-query -W -f='${Version}' phosh-osk-stevia)"
@@ -1352,7 +1359,7 @@ jobs:
       ROOT_PASSWORD: ${{ github.event.inputs.ROOT_PASSWORD || '1234' }}
       FEDORA_DESKTOP_USER: ${{ github.event.inputs.FEDORA_DESKTOP_USER || 'fedora' }}
       DESKTOP_PASSWORD: ${{ github.event.inputs.DESKTOP_PASSWORD || '' }}
-      FEDORA_PACKAGES: ${{ github.event.inputs.FEDORA_PACKAGES || 'stevia-phosh-osk-provider gnome-control-center gnome-keyring nautilus gnome-text-editor eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer snapshot gnome-weather gnome-characters gnome-usage mmsd-tng xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-fuse gvfs-mtp power-profiles-daemon upower accountsservice polkit iio-sensor-proxy geoclue2 ModemManager usb_modeswitch bluez bluez-tools callaudiod pipewire pipewire-pulseaudio wireplumber alsa-ucm pipewire-alsa mesa-dri-drivers mesa-vulkan-drivers NetworkManager-wifi wpa_supplicant iwd openssh-server sudo vim-minimal less curl wget2-wget ca-certificates htop tzdata glibc-langpack-en chrony systemd systemd-resolved dbus dbus-broker dbus-daemon google-noto-sans-cjk-fonts google-noto-serif-cjk-fonts google-noto-color-emoji-fonts dejavu-sans-fonts' }}
+      FEDORA_PACKAGES: ${{ github.event.inputs.FEDORA_PACKAGES || 'stevia-phosh-osk-provider gnome-control-center gnome-keyring nautilus gnome-text-editor gnome-console eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer snapshot gnome-weather gnome-characters gnome-usage mmsd-tng xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-fuse gvfs-mtp power-profiles-daemon upower accountsservice polkit iio-sensor-proxy geoclue2 ModemManager usb_modeswitch bluez bluez-tools callaudiod pipewire pipewire-pulseaudio wireplumber alsa-ucm pipewire-alsa mesa-dri-drivers mesa-vulkan-drivers NetworkManager-wifi wpa_supplicant iwd openssh-server sudo vim-minimal less curl wget2-wget ca-certificates htop tzdata glibc-langpack-en chrony systemd systemd-resolved dbus dbus-broker dbus-daemon google-noto-sans-cjk-fonts google-noto-serif-cjk-fonts google-noto-color-emoji-fonts dejavu-sans-fonts' }}
       FEDORA_RELEASE: "44"
       # init-rootfs.c 用 ext4 label "rootfs" 作为 UUID 失配后的兜底，不要随便改。
       ROOTFS_LABEL: rootfs
@@ -1684,7 +1691,9 @@ jobs:
           rm -f /var/lib/systemd/random-seed
 
           echo "=== [7/8] 记录版本并清理 ==="
-          rpm -q phosh phoc phrog stevia > /root/fedora-phosh-version.txt
+          # stevia 可能是 phosh 的推荐/弱依赖，group 安装成功也不一定装；
+          # rpm -q 缺包返回非零，这里不能让它中断收尾，否则版本文件不会留下来。
+          rpm -q phosh phoc phrog stevia > /root/fedora-phosh-version.txt || true
 
           "${DNF[@]}" clean all || true
           rm -rf /var/cache/dnf/* /var/cache/libdnf5/* /var/log/journal/*
