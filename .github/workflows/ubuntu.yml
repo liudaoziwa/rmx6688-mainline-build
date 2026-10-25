@@ -1,0 +1,664 @@
+# Ubuntu 26.04 ARM64 rootfs：Phosh 移动桌面 + 标准 GNOME 桌面。
+# 只支持手动 workflow_dispatch 触发；push 不触发。
+
+name: build Ubuntu 26.04 ARM64 rootfs
+'on':
+  workflow_dispatch:
+    inputs:
+      UBUNTU_ROOTFS_SIZE:
+        description: Ubuntu rootfs 镜像大小（Phosh 建议 6G）
+        required: true
+        default: 6G
+        type: string
+      UBUNTU_DESKTOP_USER:
+        description: Ubuntu rootfs 桌面用户名
+        required: false
+        default: ubuntu
+        type: string
+      UBUNTU_PACKAGES:
+        description: Ubuntu rootfs 安装的包（空格分隔；Phosh 桌面 + 移动端应用，全部用仓库二进制包）
+        required: false
+        default: systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus dbus-user-session libpam-systemd libnss-systemd phosh phrog phosh-osk-stevia phosh-mobile-settings phosh-mobile-tweaks phosh-plugins greetd gnome-session-bin gnome-session-common gnome-settings-daemon gnome-shell-common gnome-keyring gnome-bluetooth-sendto feedbackd callaudiod network-manager bluez rfkill iio-sensor-proxy geoclue-2.0 pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-lato fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales language-pack-zh-hans language-pack-en tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2
+        type: string
+      ROOTFS_HOSTNAME:
+        description: rootfs 主机名
+        required: true
+        default: rmx6688
+        type: string
+      ROOT_PASSWORD:
+        description: root 密码
+        required: true
+        default: '1234'
+        type: string
+      DESKTOP_PASSWORD:
+        description: 桌面用户密码（留空则与 root 相同）
+        required: false
+        default: ''
+        type: string
+      UPLOAD_RAW_IMG:
+        description: 同时上传未压缩的 rootfs.img（体积大）
+        required: false
+        default: false
+        type: boolean
+      INSTALL_STANDARD_DESKTOP:
+        description: 额外安装标准桌面（默认开启；移动桌面仍为默认会话）
+        required: false
+        default: true
+        type: boolean
+      STANDARD_PACKAGES:
+        description: 标准桌面包（空格分隔）
+        required: false
+        default: gnome-shell gnome-session gdm3
+        type: string
+permissions:
+  contents: read
+env:
+  UBUNTU_BASE_TARBALL: https://cdimage.ubuntu.com/ubuntu-base/releases/26.04/release/ubuntu-base-26.04-base-arm64.tar.gz
+  UBUNTU_BASE_TARBALL_FALLBACK: https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cdimage/ubuntu-base/releases/26.04/release/ubuntu-base-26.04-base-arm64.tar.gz
+  UBUNTU_BASE_TARBALL_SHA256: b2b46a37324ea1954e93f293fe6d7c2241daf2fc298c4022e6e4caceeed74cab
+  UBUNTU_SUITE: resolute
+jobs:
+  ubuntu-rootfs:
+    name: build Ubuntu 26.04 ARM64 rootfs (Phosh + standard GNOME)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    env:
+      UBUNTU_ROOTFS_SIZE: ${{ github.event.inputs.UBUNTU_ROOTFS_SIZE || '6G' }}
+      ROOTFS_HOSTNAME: ${{ github.event.inputs.ROOTFS_HOSTNAME || 'rmx6688' }}
+      ROOT_PASSWORD: ${{ github.event.inputs.ROOT_PASSWORD || '1234' }}
+      UBUNTU_DESKTOP_USER: ${{ github.event.inputs.UBUNTU_DESKTOP_USER || 'ubuntu' }}
+      DESKTOP_PASSWORD: ${{ github.event.inputs.DESKTOP_PASSWORD || '' }}
+      UBUNTU_PACKAGES: ${{ github.event.inputs.UBUNTU_PACKAGES || 'systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus dbus-user-session libpam-systemd libnss-systemd phosh phrog phosh-osk-stevia phosh-mobile-settings phosh-mobile-tweaks phosh-plugins greetd gnome-session-bin gnome-session-common gnome-settings-daemon gnome-shell-common gnome-keyring gnome-bluetooth-sendto feedbackd callaudiod network-manager bluez rfkill iio-sensor-proxy geoclue-2.0 pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-lato fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales language-pack-zh-hans language-pack-en tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2' }}
+      ROOTFS_LABEL: rootfs
+      INSTALL_STANDARD_DESKTOP: ${{ github.event.inputs.INSTALL_STANDARD_DESKTOP || 'true' }}
+      STANDARD_PACKAGES: ${{ github.event.inputs.STANDARD_PACKAGES || 'gnome-shell gnome-session gdm3' }}
+    steps:
+    - name: Validate inputs
+      run: |
+        set -euo pipefail
+        # 这个 job 固定用原生 arm64 runner；若 runner 被改回 x86_64，尽早报错。
+        if [ "$(uname -m)" != "aarch64" ]; then
+          echo "::error::ubuntu-rootfs job 必须在原生 aarch64 runner 上运行，当前架构：$(uname -m)"
+          exit 1
+        fi
+        if ! [[ "$UBUNTU_ROOTFS_SIZE" =~ ^[0-9]+[GgMm]$ ]]; then
+          echo "::error::UBUNTU_ROOTFS_SIZE 必须是类似 6G / 5120M 的值，当前：$UBUNTU_ROOTFS_SIZE"
+          exit 1
+        fi
+        if ! [[ "$ROOTFS_HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
+          echo "::error::ROOTFS_HOSTNAME 不是合法主机名：$ROOTFS_HOSTNAME"
+          exit 1
+        fi
+        test -n "$ROOT_PASSWORD" || { echo "::error::ROOT_PASSWORD 不能为空"; exit 1; }
+        case "$ROOT_PASSWORD" in
+          *:*) echo "::error::ROOT_PASSWORD 不能包含冒号"; exit 1 ;;
+        esac
+        if ! [[ "$UBUNTU_DESKTOP_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+          echo "::error::UBUNTU_DESKTOP_USER 不是合法用户名：$UBUNTU_DESKTOP_USER"
+          exit 1
+        fi
+        if [ "$UBUNTU_DESKTOP_USER" = "root" ]; then
+          echo "::error::UBUNTU_DESKTOP_USER 不能是 root（Phosh/greetd 不允许 root 图形会话）"
+          exit 1
+        fi
+        case "$DESKTOP_PASSWORD" in
+          *:*) echo "::error::DESKTOP_PASSWORD 不能包含冒号"; exit 1 ;;
+        esac
+        test -n "$UBUNTU_PACKAGES" || { echo "::error::UBUNTU_PACKAGES 不能为空"; exit 1; }
+        echo "ubuntu rootfs: size=$UBUNTU_ROOTFS_SIZE hostname=$ROOTFS_HOSTNAME label=$ROOTFS_LABEL"
+        echo "desktop: Phosh (package-based, no source build)"
+        echo "desktop user: $UBUNTU_DESKTOP_USER"
+        echo "packages: $UBUNTU_PACKAGES"
+    - name: Free runner disk for Ubuntu rootfs
+      run: |
+        set -euo pipefail
+        # GitHub runner 预装的 Android SDK / .NET / GHC 等与本构建无关；
+        # Ubuntu Phosh rootfs 需要更多可用空间。
+        sudo rm -rf \
+          /usr/local/lib/android \
+          /usr/share/dotnet \
+          /opt/ghc \
+          /opt/hostedtoolcache/CodeQL \
+          /usr/local/share/boost \
+          /usr/share/swift \
+          /usr/local/share/powershell \
+          /opt/az \
+          /usr/local/.ghcup \
+          /usr/lib/jvm \
+          /usr/local/share/chromium \
+          /opt/microsoft \
+          /opt/google
+        sudo apt-get clean
+        df -h /
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          wget curl ca-certificates \
+          e2fsprogs util-linux rsync \
+          libarchive-tools android-sdk-libsparse-utils
+        bsdtar --version
+        img2simg 2>&1 | head -1 || true
+    - name: Download and extract Ubuntu 26.04 arm64 base
+      run: |
+        set -euo pipefail
+        wget -q --show-progress --tries=3 --timeout=60 -O ubuntu-base-26.04-arm64.tar.gz "$UBUNTU_BASE_TARBALL" \
+          || wget -q --show-progress --tries=3 --timeout=60 -O ubuntu-base-26.04-arm64.tar.gz "$UBUNTU_BASE_TARBALL_FALLBACK"
+        echo "$UBUNTU_BASE_TARBALL_SHA256  ubuntu-base-26.04-arm64.tar.gz" | sha256sum -c -
+        mkdir -p rootfs
+        # bsdtar 显式保留 ACL / xattr（file capabilities）；普通 tar 会丢。
+        sudo bsdtar --acls --xattrs -xpf ubuntu-base-26.04-arm64.tar.gz -C rootfs
+        test -x rootfs/bin/bash
+        # rootfs 目录本身是 runner 用户创建的；bsdtar 只改归档内条目的属主，
+        # 不会把目录自身改成 root。chroot 后 `/` 会显示 UID 1001，
+        # systemd-tmpfiles 会判定 unsafe path transition 并以非零退出，
+        # 导致大量 postinst 失败，所以必须把 rootfs 顶层属主改回 root。
+        sudo chown 0:0 rootfs
+        sudo chmod 0755 rootfs
+        rm -f ubuntu-base-26.04-arm64.tar.gz
+        ls -ld rootfs rootfs/usr rootfs/etc
+    - name: Write Ubuntu rootfs setup script
+      run: |
+        set -euo pipefail
+        sudo mkdir -p rootfs/root
+        sudo tee rootfs/root/setup-ubuntu-rootfs.sh > /dev/null <<'EOS'
+        #!/bin/bash
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        export APT_LISTCHANGES_FRONTEND=none
+
+        [ "$(dpkg --print-architecture)" = "arm64" ] \
+          || { echo "::error::chroot 不是 arm64"; exit 1; }
+
+        echo "=== [1/7] 配置 Ubuntu apt 源（arm64 ports + deb-src） ==="
+        cat > /etc/apt/sources.list.d/ubuntu.sources <<EOF
+        Types: deb deb-src
+        URIs: http://ports.ubuntu.com/ubuntu-ports
+        Suites: ${UBUNTU_SUITE} ${UBUNTU_SUITE}-updates ${UBUNTU_SUITE}-security
+        Components: main restricted universe multiverse
+        Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+        EOF
+        rm -f /etc/apt/sources.list
+
+        # chroot 里没有运行中的 systemd，禁止安装包时尝试启动服务。
+        printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+        chmod 755 /usr/sbin/policy-rc.d
+
+        apt-get update
+
+        echo "=== [2/7] 安装 Phosh 及移动端组件 ==="
+        # ubuntu-base 只带 libsystemd0，没有 systemd / systemctl / /sbin/init，
+        # 必须显式安装 systemd + systemd-sysv，否则镜像无法启动。
+        #
+        # Ubuntu 仓库没有 gnome-shell-mobile；这里全部使用 Phosh 二进制包。
+        # phrog/phosh-session 会调用 dbus-run-session，Ubuntu 26.04 里它由
+        # dbus/dbus-daemon 提供，所以显式安装 dbus + dbus-user-session。
+        read -r -a requested_pkgs <<< "$ROOTFS_PACKAGES"
+        ubuntu_pkgs=()
+        for pkg in "${requested_pkgs[@]}"; do
+          ubuntu_pkgs+=("$pkg")
+        done
+        # 用户自定义包列表可能漏掉 Phosh 核心组件；桌面必须依赖它们。
+        for pkg in phosh phrog phosh-osk-stevia phosh-mobile-settings phosh-mobile-tweaks phosh-plugins greetd dbus dbus-user-session; do
+          case " ${ubuntu_pkgs[*]} " in
+            *" $pkg "*) ;;
+            *) ubuntu_pkgs+=("$pkg") ;;
+          esac
+        done
+        apt-get install -y --no-install-recommends "${ubuntu_pkgs[@]}"
+
+        # 额外安装标准桌面；默认 GNOME，与 Phosh 共存。
+        # 默认显示管理器仍是 greetd/phrog，默认会话仍是 Phosh。
+        if [ "${ROOTFS_INSTALL_STANDARD:-true}" = "true" ]; then
+          read -r -a standard_pkgs <<< "$ROOTFS_STANDARD_PACKAGES"
+          apt-get install -y --no-install-recommends "${standard_pkgs[@]}"
+          # 标准桌面可能带 gdm；移动版默认用 greetd，避免两个 DM 冲突。
+          systemctl disable gdm.service gdm3.service 2>/dev/null || true
+        fi
+
+        echo "=== [3/7] 校验 Phosh 桌面组件 ==="
+        test -x /usr/bin/phosh-session \
+          || { echo "::error::缺少 /usr/bin/phosh-session"; exit 1; }
+        test -x /usr/bin/phoc \
+          || { echo "::error::缺少 /usr/bin/phoc"; exit 1; }
+        test -x /usr/bin/phrog \
+          || { echo "::error::缺少 /usr/bin/phrog"; exit 1; }
+        test -x /usr/bin/dbus-run-session \
+          || { echo "::error::缺少 /usr/bin/dbus-run-session"; exit 1; }
+        test -f /usr/share/wayland-sessions/phosh.desktop \
+          || { echo "::error::缺少 phosh.desktop"; exit 1; }
+        test -f /usr/share/gnome-session/sessions/phosh.session \
+          || { echo "::error::缺少 phosh.session"; exit 1; }
+        test -f /etc/greetd/phrog.toml \
+          || { echo "::error::缺少 /etc/greetd/phrog.toml"; exit 1; }
+        echo "phosh: $(dpkg-query -W -f='${Version}' phosh)"
+        echo "phrog: $(dpkg-query -W -f='${Version}' phrog)"
+        echo "phosh-osk-stevia: $(dpkg-query -W -f='${Version}' phosh-osk-stevia)"
+
+        echo "=== [4/7] 系统配置与清理 ==="
+        printf '%s\n' "$ROOTFS_HOSTNAME" > /etc/hostname
+        cat > /etc/hosts <<HOSTS_EOF
+        127.0.0.1       localhost
+        127.0.1.1       $ROOTFS_HOSTNAME
+        ::1             localhost ip6-localhost ip6-loopback
+        HOSTS_EOF
+
+        # init-rootfs.c 用 label "rootfs" 找根文件系统，fstab 也按 label 写。
+        cat > /etc/fstab <<'FSTAB_EOF'
+        # <device> <mount> <type> <options> <dump> <pass>
+        LABEL=rootfs  /  ext4  defaults,noatime,errors=remount-ro  0  1
+        FSTAB_EOF
+
+        # Phosh/phoc 默认只对 Virtual/Headless 输出设置 scale=2；真实手机的
+        # DSI 面板不设置时 UI 会偏小。这里给 DSI-1 显式 scale=2，提升可读性。
+        install -d -m 0755 /etc/phosh
+        cat > /etc/phosh/phoc.ini <<'PHOC_EOF'
+        [output:DSI-1]
+        scale = 2
+        PHOC_EOF
+        chmod 0644 /etc/phosh/phoc.ini
+
+        sed -i 's/^#\s*zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
+        grep -q '^zh_CN.UTF-8 UTF-8' /etc/locale.gen || echo 'zh_CN.UTF-8 UTF-8' >> /etc/locale.gen
+        grep -q '^en_US.UTF-8 UTF-8' /etc/locale.gen || echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen
+        locale-gen
+        printf 'LANG=zh_CN.UTF-8\n' > /etc/default/locale
+        printf 'LANG=zh_CN.UTF-8\n' > /etc/locale.conf
+
+        # 默认 2x 缩放：让 GTK/Qt 应用全局生效；Phosh 另有 phoc.ini。
+        cat > /etc/environment <<'ENV_EOF'
+        GDK_SCALE=2
+        QT_SCALE_FACTOR=2
+        ENV_EOF
+        chmod 0644 /etc/environment
+        if [ -e /usr/share/zoneinfo/Asia/Shanghai ]; then
+          ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+          echo 'Asia/Shanghai' > /etc/timezone
+        fi
+
+        printf 'root:%s\n' "$ROOTFS_PASSWORD" | chpasswd
+
+        # 桌面用户；Ubuntu 的管理员组是 sudo。Phosh 常用 UID 1000，
+        # 这里在 UID 空闲时优先分配 1000。
+        if ! id "$ROOTFS_DESKTOP_USER" >/dev/null 2>&1; then
+          if getent passwd 1000 >/dev/null 2>&1; then
+            useradd -m -s /bin/bash "$ROOTFS_DESKTOP_USER"
+          else
+            useradd -m -u 1000 -s /bin/bash "$ROOTFS_DESKTOP_USER"
+          fi
+        fi
+        for grp in sudo adm audio video input render bluetooth plugdev netdev lpadmin scanner; do
+          if getent group "$grp" >/dev/null; then
+            usermod -aG "$grp" "$ROOTFS_DESKTOP_USER"
+          fi
+        done
+        printf '%s:%s\n' "$ROOTFS_DESKTOP_USER" \
+          "${ROOTFS_DESKTOP_PASSWORD:-$ROOTFS_PASSWORD}" | chpasswd
+        install -d -m 750 /etc/sudoers.d
+        printf '%%sudo ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/10-sudo
+        chmod 440 /etc/sudoers.d/10-sudo
+
+        if dpkg -s openssh-server >/dev/null 2>&1; then
+          sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          # 每台设备首次开机生成唯一 host key：Ubuntu 的 sshd-keygen.service
+          # 由包默认启用，配合 /etc/machine-id 缺失（首次开机）自动执行。
+          rm -f /etc/ssh/ssh_host_*
+          systemctl enable sshd-keygen.service 2>/dev/null || true
+          # Ubuntu 26.04 默认 socket 激活；只有没启用 socket 时才启用 service。
+          if [ -L /etc/systemd/system/sockets.target.wants/ssh.socket ]; then
+            echo "ssh.socket 已由包默认启用"
+          else
+            systemctl enable ssh.service 2>/dev/null || echo "WARNING: cannot enable ssh.service"
+          fi
+        fi
+
+        # NetworkManager 走 systemd-resolved 管 DNS。
+        mkdir -p /etc/NetworkManager/conf.d
+        printf '[main]\ndns=systemd-resolved\n' > /etc/NetworkManager/conf.d/dns.conf
+
+        for svc in NetworkManager systemd-resolved systemd-timesyncd bluetooth; do
+          systemctl enable "$svc" 2>/dev/null || echo "WARNING: cannot enable $svc"
+        done
+        systemctl enable iio-sensor-proxy.service 2>/dev/null || true
+        systemctl enable serial-getty@ttyS0.service 2>/dev/null || true
+        # greetd 用 vt7，和 getty@tty7 冲突；tty1 的 getty 也不需要。
+        systemctl disable getty@tty1.service 2>/dev/null || true
+        systemctl disable getty@tty7.service 2>/dev/null || true
+
+        # Phosh 跑 Wayland；phrog 是 greetd 的触摸 greeter，由 greetd 拉起。
+        # 标准桌面可能带 gdm；移动版默认用 greetd/phrog。
+        systemctl disable gdm.service gdm3.service 2>/dev/null || true
+        if systemctl enable greetd.service 2>/dev/null; then
+          echo "display manager: greetd/phrog enabled"
+        else
+          echo "::error::无法启用 greetd.service"
+          exit 1
+        fi
+        systemctl set-default graphical.target \
+          || ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target
+
+        ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+
+        # 让每台设备首次开机生成唯一 machine-id（文件缺失才算“首次开机”，
+        # 空文件不算，见 machine-id(5) 的 First Boot Semantics）。
+        rm -f /etc/machine-id
+        rm -f /var/lib/systemd/random-seed
+
+        # 本 workflow 明确不安装固件/内核模块，再兜底清一次。
+        apt-get purge -y 'linux-firmware*' 'wireless-regdb' 'linux-image*' 'linux-modules*' 'linux-headers*' 2>/dev/null || true
+        apt-get autoremove --purge -y || true
+        rm -rf /lib/firmware /usr/lib/firmware
+        for d in /lib/modules /usr/lib/modules; do
+          mkdir -p "$d"
+          find "$d" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        done
+        mkdir -p /boot
+        find /boot -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+        # chroot 装包用的 policy-rc.d 不留在最终镜像里。
+        rm -f /usr/sbin/policy-rc.d
+
+        # 清缓存，缩小镜像。
+        apt-get clean
+        rm -rf /var/lib/apt/lists/*
+        rm -rf /var/cache/apt/archives/*
+        rm -f /root/pkgs-before-build.txt /root/pkgs-after-build.txt /root/build-deps.list
+        rm -rf /var/log/journal/*
+        find /var/log -type f -exec truncate -s 0 {} + 2>/dev/null || true
+        mkdir -p /var/lib/apt/lists/partial /var/cache/apt/archives/partial
+
+        echo "Ubuntu 26.04 Phosh rootfs setup done"
+        EOS
+        sudo chmod +x rootfs/root/setup-ubuntu-rootfs.sh
+    - name: Configure Ubuntu rootfs in native aarch64 chroot
+      run: |
+        set -euo pipefail
+        # runner 本身是 aarch64，chroot 可直接执行 Ubuntu arm64 的二进制。
+        # 顶层属主必须是 root：否则 chroot 内 systemd-tmpfiles 会报
+        # unsafe path transition，导致 polkitd 等包 postinst 失败。
+        rootfs_owner="$(stat -c '%u' rootfs)"
+        [ "$rootfs_owner" = 0 ] || {
+          echo "::error::rootfs 顶层属主不是 root：UID=$rootfs_owner"
+          exit 1
+        }
+        sudo rm -f rootfs/etc/resolv.conf
+        sudo cp /etc/resolv.conf rootfs/etc/resolv.conf
+        # 宿主机若用 systemd-resolved stub，chroot 里没有该服务，换公共 DNS。
+        if grep -q '^nameserver 127\.0\.0\.53' rootfs/etc/resolv.conf; then
+          echo "chroot 内无 systemd-resolved，改用公共 DNS"
+          printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' | sudo tee rootfs/etc/resolv.conf > /dev/null
+        fi
+        sudo mkdir -p rootfs/proc rootfs/sys rootfs/dev/pts
+
+        cleanup() {
+          sudo umount -lf rootfs/dev/pts 2>/dev/null || true
+          sudo umount -lf rootfs/dev     2>/dev/null || true
+          sudo umount -lf rootfs/proc    2>/dev/null || true
+          sudo umount -lf rootfs/sys     2>/dev/null || true
+          sudo umount -lf rootfs         2>/dev/null || true
+        }
+        trap cleanup EXIT
+
+        # 和 Arch job 一样：把 rootfs bind 到自身，避免 apt/dpkg 的
+        # 挂载点检查误判；proc/sys/dev 提供 chroot 内基本环境。
+        sudo mount --bind rootfs rootfs
+        sudo mount -t proc  proc  rootfs/proc
+        sudo mount -t sysfs sysfs rootfs/sys
+        sudo mount --bind /dev rootfs/dev
+        sudo mount --bind /dev/pts rootfs/dev/pts
+
+        sudo chroot rootfs /usr/bin/env -i \
+          PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+          HOME=/root \
+          LANG=C \
+          UBUNTU_SUITE="$UBUNTU_SUITE" \
+          ROOTFS_HOSTNAME="$ROOTFS_HOSTNAME" \
+          ROOTFS_PASSWORD="$ROOT_PASSWORD" \
+          ROOTFS_DESKTOP_USER="$UBUNTU_DESKTOP_USER" \
+          ROOTFS_DESKTOP_PASSWORD="${DESKTOP_PASSWORD:-$ROOT_PASSWORD}" \
+          ROOTFS_PACKAGES="$UBUNTU_PACKAGES" \
+          /bin/bash /root/setup-ubuntu-rootfs.sh
+
+        cleanup
+        trap - EXIT
+    - name: Clean chroot artifacts and remove all kernel modules
+      run: |
+        set -euo pipefail
+        sudo umount -lf rootfs/dev/pts 2>/dev/null || true
+        sudo umount -lf rootfs/dev     2>/dev/null || true
+        sudo umount -lf rootfs/proc    2>/dev/null || true
+        sudo umount -lf rootfs/sys     2>/dev/null || true
+
+        # 防止后面 rsync/mkfs 把宿主机 /proc /sys /dev 抄进镜像。
+        for d in proc sys dev dev/pts; do
+          if mountpoint -q "rootfs/$d"; then
+            echo "::error::rootfs/$d 仍然挂载着，不能打进镜像"
+            exit 1
+          fi
+        done
+
+        sudo rm -f rootfs/root/setup-ubuntu-rootfs.sh
+
+        # 本工作流明确不安装内核模块；清空 /lib/modules（以及 usrmerge 下的
+        # /usr/lib/modules），保留空目录。
+        for d in rootfs/lib/modules rootfs/usr/lib/modules; do
+          sudo mkdir -p "$d"
+          sudo find "$d" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        done
+
+        # rootfs 的 /boot 由外部 boot 分区提供，清掉发行版可能残留的
+        # kernel/initramfs（initramfs 里也会打包模块）。
+        sudo mkdir -p rootfs/boot
+        sudo find rootfs/boot -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+        # 确认没有把发行版内核带进来。
+        if grep -Eq '^Package: linux-(image|modules|headers)' rootfs/var/lib/dpkg/status; then
+          echo "::error::rootfs 里仍然安装了发行版内核包"
+          exit 1
+        fi
+        if [ -n "$(find rootfs/boot -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+          echo "::error::rootfs/boot 不是空的，仍有 kernel/initramfs 残留"
+          exit 1
+        fi
+    - name: Verify Ubuntu rootfs
+      run: |
+        set -euo pipefail
+        trap 'echo "::error::Verify Ubuntu rootfs failed at line $LINENO"' ERR
+        if [ ! -e rootfs/sbin/init ] && [ ! -L rootfs/sbin/init ] && [ -e rootfs/usr/lib/systemd/systemd ]; then
+          echo "WARNING: /sbin/init 缺失，补一个到 systemd 的软链接"
+          sudo mkdir -p rootfs/sbin
+          sudo ln -sf /usr/lib/systemd/systemd rootfs/sbin/init
+        fi
+        { [ -e rootfs/sbin/init ] || [ -L rootfs/sbin/init ]; } \
+          || { echo "::error::rootfs 里没有 /sbin/init"; exit 1; }
+        test -e rootfs/usr/lib/systemd/systemd
+        test -x rootfs/usr/bin/systemctl
+        init_target="$(readlink rootfs/sbin/init || true)"
+        case "$init_target" in
+          */systemd) echo "/sbin/init -> $init_target" ;;
+          *) echo "::error::/sbin/init 未指向 systemd：$init_target"; exit 1 ;;
+        esac
+        test -f rootfs/etc/fstab \
+          || { echo "::error::rootfs/etc/fstab 缺失或不是普通文件"; ls -ld rootfs/etc/fstab || true; exit 1; }
+        grep -q '^LABEL=rootfs' rootfs/etc/fstab \
+          || { echo "::error::rootfs/etc/fstab 缺少 LABEL=rootfs"; sed -n '1,20p' rootfs/etc/fstab; exit 1; }
+        test -f rootfs/etc/hostname \
+          || { echo "::error::rootfs/etc/hostname 缺失或不是普通文件"; ls -ld rootfs/etc/hostname || true; exit 1; }
+        test -f rootfs/etc/hosts \
+          || { echo "::error::rootfs/etc/hosts 缺失或不是普通文件"; ls -ld rootfs/etc/hosts || true; exit 1; }
+
+        # 不安装固件：既不能有固件/regulatory 包，也不能有固件文件。
+        if grep -Eq '^Package: (linux-firmware|wireless-regdb)' rootfs/var/lib/dpkg/status; then
+          echo "::error::rootfs 里仍然安装了固件/regulatory 包"
+          exit 1
+        fi
+        for d in rootfs/lib/firmware rootfs/usr/lib/firmware; do
+          if [ -d "$d" ] && [ -n "$(find "$d" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+            echo "::error::$d 不是空的，本工作流不应安装固件"
+            exit 1
+          fi
+        done
+        for d in rootfs/lib/modules rootfs/usr/lib/modules; do
+          if [ -d "$d" ] && [ -n "$(find "$d" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+            echo "::error::$d 不是空的，本工作流不应安装内核模块"
+            exit 1
+          fi
+        done
+
+        # Phosh：必须是仓库二进制包，并且桌面组件齐全。
+        test -x rootfs/usr/bin/phosh-session \
+          || { echo "::error::缺少 /usr/bin/phosh-session"; exit 1; }
+        test -x rootfs/usr/bin/phoc \
+          || { echo "::error::缺少 /usr/bin/phoc"; exit 1; }
+        test -x rootfs/usr/bin/phrog \
+          || { echo "::error::缺少 /usr/bin/phrog"; exit 1; }
+        test -x rootfs/usr/bin/dbus-run-session \
+          || { echo "::error::缺少 /usr/bin/dbus-run-session"; exit 1; }
+        test -f rootfs/usr/share/wayland-sessions/phosh.desktop \
+          || { echo "::error::缺少 Phosh Wayland 会话文件"; exit 1; }
+        test -f rootfs/usr/share/gnome-session/sessions/phosh.session \
+          || { echo "::error::缺少 phosh.session"; exit 1; }
+        test -f rootfs/etc/greetd/phrog.toml \
+          || { echo "::error::缺少 /etc/greetd/phrog.toml"; exit 1; }
+        test -x rootfs/usr/bin/phosh-mobile-settings \
+          || { echo "::error::缺少 phosh-mobile-settings（设置入口）"; exit 1; }
+        test -f rootfs/etc/phosh/phoc.ini \
+          || { echo "::error::缺少 /etc/phosh/phoc.ini（DSI 缩放配置）"; exit 1; }
+        grep -q '^scale = 2$' rootfs/etc/phosh/phoc.ini \
+          || { echo "::error::phoc.ini 未配置 DSI-1 scale=2"; exit 1; }
+
+        test -L rootfs/etc/systemd/system/display-manager.service \
+          || { echo "::error::display-manager.service 未启用"; exit 1; }
+        readlink rootfs/etc/systemd/system/display-manager.service | grep -q 'greetd' \
+          || { echo "::error::display-manager.service 不是 greetd"; exit 1; }
+        readlink rootfs/etc/systemd/system/default.target | grep -q 'graphical.target' \
+          || { echo "::error::默认 systemd target 不是 graphical.target"; exit 1; }
+
+        grep -q "^${UBUNTU_DESKTOP_USER}:" rootfs/etc/passwd \
+          || { echo "::error::桌面用户 ${UBUNTU_DESKTOP_USER} 不存在"; exit 1; }
+        test -d "rootfs/home/${UBUNTU_DESKTOP_USER}" \
+          || { echo "::error::桌面用户 ${UBUNTU_DESKTOP_USER} 的 home 不存在"; exit 1; }
+        sudo grep -q '^%sudo ALL=(ALL:ALL) ALL$' rootfs/etc/sudoers.d/10-sudo \
+          || { echo "::error::sudo 配置缺失"; exit 1; }
+        sudo_members="$(awk -F: '$1=="sudo"{print $4}' rootfs/etc/group)"
+        case ",$sudo_members," in
+          *",$UBUNTU_DESKTOP_USER,"*) echo "sudo group: $UBUNTU_DESKTOP_USER" ;;
+          *) echo "::error::桌面用户不在 sudo 组"; exit 1 ;;
+        esac
+
+        if [ -L rootfs/etc/systemd/system/multi-user.target.wants/ssh.service ] \
+          || [ -L rootfs/etc/systemd/system/sockets.target.wants/ssh.socket ]; then
+          echo "ssh enabled"
+        else
+          echo "WARNING: ssh 未设置开机自启"
+        fi
+        test -L rootfs/etc/systemd/system/multi-user.target.wants/NetworkManager.service \
+          || echo "WARNING: NetworkManager 未设置开机自启"
+
+        echo "--- /sbin/init ---"
+        ls -l rootfs/sbin/init
+        echo "--- modules ---"
+        ls -la rootfs/lib/modules
+    - name: Create ext4 image (loop mount with mkfs -d fallback)
+      run: |
+        set -euo pipefail
+        MNT=/mnt/ubuntu-rootfs-img
+        cleanup() {
+          sudo umount -lf "$MNT" 2>/dev/null || true
+        }
+        trap cleanup EXIT
+
+        truncate -s "${UBUNTU_ROOTFS_SIZE^^}" ubuntu-rootfs.img
+        sudo mkfs.ext4 -F -L "$ROOTFS_LABEL" ubuntu-rootfs.img
+
+        sudo mkdir -p "$MNT"
+        used_loop=0
+        if sudo mount -o loop ubuntu-rootfs.img "$MNT"; then
+          # rsync 保留 xattr / capabilities / ACL / 设备节点；
+          # mkfs.ext4 -d 在部分 e2fsprogs 上会丢 capabilities。
+          if sudo rsync -aHAX --numeric-ids rootfs/ "$MNT/"; then
+            sync
+            sudo umount "$MNT"
+            used_loop=1
+          else
+            echo "::warning::rsync 到 loop 镜像失败，回退到 mkfs.ext4 -d"
+            sudo umount -lf "$MNT" 2>/dev/null || true
+          fi
+        fi
+        if [ "$used_loop" -ne 1 ]; then
+          if mountpoint -q "$MNT"; then
+            echo "::error::$MNT 仍然挂载，拒绝在已挂载的镜像上重新 mkfs"
+            exit 1
+          fi
+          echo "loop mount 不可用或 rsync 失败，回退到 mkfs.ext4 -d"
+          sudo mkfs.ext4 -F -L "$ROOTFS_LABEL" -d rootfs ubuntu-rootfs.img
+        fi
+        cleanup
+        trap - EXIT
+        sudo rmdir "$MNT" 2>/dev/null || true
+
+        set +e
+        sudo e2fsck -fy ubuntu-rootfs.img
+        e2fsck_rc=$?
+        set -e
+        # 0=无错误，1/2=已修复（2 只是建议重启）；>=4 表示仍有未修复错误。
+        if [ "$e2fsck_rc" -ge 4 ]; then
+          echo "::error::e2fsck 返回 $e2fsck_rc，文件系统存在未修复错误"
+          exit 1
+        fi
+        sudo tune2fs -L "$ROOTFS_LABEL" ubuntu-rootfs.img
+        sudo dumpe2fs -h ubuntu-rootfs.img | grep -E \
+          'Filesystem volume name|Filesystem UUID|Block count|Block size'
+
+        # 内容已经写进 ubuntu-rootfs.img，删除源目录释放 runner 磁盘。
+        sudo rm -rf rootfs
+
+        img2simg ubuntu-rootfs.img ubuntu-rootfs-sparse.img
+        sha256sum ubuntu-rootfs-sparse.img | tee ubuntu-rootfs-sparse.img.sha256
+        ls -lh ubuntu-rootfs.img ubuntu-rootfs-sparse.img
+        du -h ubuntu-rootfs.img ubuntu-rootfs-sparse.img
+    - name: Upload Ubuntu 26.04 ARM64 rootfs (sparse)
+      uses: actions/upload-artifact@v4
+      with:
+        name: ubuntu-26.04-rootfs
+        path: |
+          ubuntu-rootfs-sparse.img
+          ubuntu-rootfs-sparse.img.sha256
+        if-no-files-found: error
+        compression-level: 0
+    - name: Upload raw ubuntu-rootfs.img
+      if: ${{ github.event.inputs.UPLOAD_RAW_IMG == 'true' || github.event.inputs.UPLOAD_RAW_IMG == true }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ubuntu-26.04-rootfs-raw
+        path: ubuntu-rootfs.img
+        if-no-files-found: error
+        compression-level: 0
+    - name: Write job summary
+      run: |
+        {
+          echo "## Ubuntu 26.04 ARM64 rootfs (Phosh)"
+          echo ""
+          echo "| 项目 | 值 |"
+          echo "|------|----|"
+          echo "| 构建环境 | GitHub 原生 arm64（\`ubuntu-24.04-arm\`） |"
+          echo "| 发行版 | Ubuntu 26.04 LTS（Resolute Raccoon, \`$UBUNTU_SUITE\`）arm64 |"
+          echo "| 桌面环境 | Phosh + phrog + Stevia OSK（Wayland，仓库二进制包） |"
+          echo "| 桌面用户 | \`$UBUNTU_DESKTOP_USER\` |"
+          echo "| 镜像大小 | \`$UBUNTU_ROOTFS_SIZE\` |"
+          echo "| ext4 label | \`$ROOTFS_LABEL\` |"
+          echo "| 主机名 | \`$ROOTFS_HOSTNAME\` |"
+          echo "| 移动端适配 | Phosh 手机 shell + 触摸键盘 + 自动旋转（iio-sensor-proxy） |"
+          echo "| 固件 | 未安装（按设计） |"
+          echo "| 内核模块 | 未安装（按设计） |"
+          echo ""
+          echo '```'
+          ls -lh ubuntu-rootfs.img ubuntu-rootfs-sparse.img
+          echo '```'
+          echo ""
+          echo "刷写：把 \`ubuntu-rootfs-sparse.img\` 刷到 GPT 名为 \`rootfs\` 的分区，"
+          echo "或 \`fastboot flash <rootfs 分区> ubuntu-rootfs-sparse.img\`。"
+          echo ""
+          echo "注意：本 job 使用 Ubuntu 仓库 Phosh 二进制包，不源码编译 GNOME Shell Mobile。"
+        } >> "$GITHUB_STEP_SUMMARY"
