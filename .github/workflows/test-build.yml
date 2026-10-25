@@ -1150,6 +1150,7 @@ jobs:
       - name: Verify Ubuntu rootfs
         run: |
           set -euo pipefail
+          trap 'echo "::error::Verify Ubuntu rootfs failed at line $LINENO"' ERR
           if [ ! -e rootfs/sbin/init ] && [ ! -L rootfs/sbin/init ] && [ -e rootfs/usr/lib/systemd/systemd ]; then
             echo "WARNING: /sbin/init 缺失，补一个到 systemd 的软链接"
             sudo mkdir -p rootfs/sbin
@@ -1164,10 +1165,14 @@ jobs:
             */systemd) echo "/sbin/init -> $init_target" ;;
             *) echo "::error::/sbin/init 未指向 systemd：$init_target"; exit 1 ;;
           esac
-          test -f rootfs/etc/fstab
-          grep -q '^LABEL=rootfs' rootfs/etc/fstab
-          test -f rootfs/etc/hostname
-          test -f rootfs/etc/hosts
+          test -f rootfs/etc/fstab \
+            || { echo "::error::rootfs/etc/fstab 缺失或不是普通文件"; ls -ld rootfs/etc/fstab || true; exit 1; }
+          grep -q '^LABEL=rootfs' rootfs/etc/fstab \
+            || { echo "::error::rootfs/etc/fstab 缺少 LABEL=rootfs"; sed -n '1,20p' rootfs/etc/fstab; exit 1; }
+          test -f rootfs/etc/hostname \
+            || { echo "::error::rootfs/etc/hostname 缺失或不是普通文件"; ls -ld rootfs/etc/hostname || true; exit 1; }
+          test -f rootfs/etc/hosts \
+            || { echo "::error::rootfs/etc/hosts 缺失或不是普通文件"; ls -ld rootfs/etc/hosts || true; exit 1; }
 
           # 不安装固件：既不能有固件/regulatory 包，也不能有固件文件。
           if grep -Eq '^Package: (linux-firmware|wireless-regdb)' rootfs/var/lib/dpkg/status; then
@@ -1188,13 +1193,20 @@ jobs:
           done
 
           # Phosh：必须是仓库二进制包，并且桌面组件齐全。
-          test -x rootfs/usr/bin/phosh
-          test -x rootfs/usr/bin/phoc
-          test -x rootfs/usr/bin/phrog
-          test -x rootfs/usr/bin/dbus-run-session
-          test -f rootfs/usr/share/wayland-sessions/phosh.desktop
-          test -f rootfs/usr/share/gnome-session/sessions/phosh.session
-          test -f rootfs/etc/greetd/phrog.toml
+          test -x rootfs/usr/bin/phosh-session \
+            || { echo "::error::缺少 /usr/bin/phosh-session"; exit 1; }
+          test -x rootfs/usr/bin/phoc \
+            || { echo "::error::缺少 /usr/bin/phoc"; exit 1; }
+          test -x rootfs/usr/bin/phrog \
+            || { echo "::error::缺少 /usr/bin/phrog"; exit 1; }
+          test -x rootfs/usr/bin/dbus-run-session \
+            || { echo "::error::缺少 /usr/bin/dbus-run-session"; exit 1; }
+          test -f rootfs/usr/share/wayland-sessions/phosh.desktop \
+            || { echo "::error::缺少 Phosh Wayland 会话文件"; exit 1; }
+          test -f rootfs/usr/share/gnome-session/sessions/phosh.session \
+            || { echo "::error::缺少 phosh.session"; exit 1; }
+          test -f rootfs/etc/greetd/phrog.toml \
+            || { echo "::error::缺少 /etc/greetd/phrog.toml"; exit 1; }
 
           test -L rootfs/etc/systemd/system/display-manager.service \
             || { echo "::error::display-manager.service 未启用"; exit 1; }
@@ -1693,7 +1705,8 @@ jobs:
           echo "=== [7/8] 记录版本并清理 ==="
           # stevia 可能是 phosh 的推荐/弱依赖，group 安装成功也不一定装；
           # rpm -q 缺包返回非零，这里不能让它中断收尾，否则版本文件不会留下来。
-          rpm -q phosh phoc phrog stevia > /root/fedora-phosh-version.txt || true
+          rpm -q phosh phoc phrog stevia > /etc/fedora-phosh-version.txt || true
+          chmod 0644 /etc/fedora-phosh-version.txt
 
           "${DNF[@]}" clean all || true
           rm -rf /var/cache/dnf/* /var/cache/libdnf5/* /var/log/journal/*
@@ -1867,10 +1880,10 @@ jobs:
             || { echo "::error::缺少 phosh.session"; exit 1; }
           test -f rootfs/usr/lib/systemd/system/phrog.service \
             || { echo "::error::缺少 phrog.service"; exit 1; }
-          test -f rootfs/root/fedora-phosh-version.txt \
+          test -f rootfs/etc/fedora-phosh-version.txt \
             || { echo "::error::缺少 fedora-phosh-version.txt"; exit 1; }
-          cat rootfs/root/fedora-phosh-version.txt
-          grep -q '^phosh-' rootfs/root/fedora-phosh-version.txt \
+          cat rootfs/etc/fedora-phosh-version.txt
+          grep -q '^phosh-' rootfs/etc/fedora-phosh-version.txt \
             || { echo "::error::Phosh 未正确安装"; exit 1; }
 
           test -L rootfs/etc/systemd/system/display-manager.service \
@@ -1910,8 +1923,8 @@ jobs:
             || { echo "::error::greetd 用户不存在"; exit 1; }
 
           # 版本信息留给 job summary，然后从最终镜像里删掉。
-          cp rootfs/root/fedora-phosh-version.txt fedora-phosh-version.txt
-          sudo rm -f rootfs/root/fedora-phosh-version.txt
+          cp rootfs/etc/fedora-phosh-version.txt fedora-phosh-version.txt
+          sudo rm -f rootfs/etc/fedora-phosh-version.txt
           echo "--- /sbin/init ---"
           ls -l rootfs/sbin/init
           echo "--- modules ---"
