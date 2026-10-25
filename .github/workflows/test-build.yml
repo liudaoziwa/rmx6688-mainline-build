@@ -595,13 +595,21 @@ jobs:
 
           # Plasma Login Manager 的 greeter 需要 /var/lib/plasmalogin；
           # 缺它或属主不对时 plasmalogin-helper 会 chdir 失败并退出码 3。
+          # 这里用数字 UID/GID 校验：runner 自身的 /etc/passwd 没有 plasmalogin，
+          # 直接用 stat 的 %U:%G 会显示 UNKNOWN:UNKNOWN，误报属主错误。
           if [ -e rootfs/usr/lib/systemd/system/plasmalogin.service ]; then
             test -d rootfs/var/lib/plasmalogin \
               || { echo "::error::缺少 /var/lib/plasmalogin，plasmalogin greeter 会失败"; exit 1; }
-            plasmalogin_dir_owner="$(stat -c '%U:%G' rootfs/var/lib/plasmalogin)"
+            plasmalogin_uid="$(awk -F: '$1=="plasmalogin"{print $3}' rootfs/etc/passwd)"
+            plasmalogin_gid="$(awk -F: '$1=="plasmalogin"{print $3}' rootfs/etc/group)"
+            [ -n "$plasmalogin_uid" ] \
+              || { echo "::error::rootfs 里缺少 plasmalogin 用户"; exit 1; }
+            [ -n "$plasmalogin_gid" ] \
+              || { echo "::error::rootfs 里缺少 plasmalogin 组"; exit 1; }
+            plasmalogin_dir_owner="$(stat -c '%u:%g' rootfs/var/lib/plasmalogin)"
             plasmalogin_dir_mode="$(stat -c '%a' rootfs/var/lib/plasmalogin)"
-            [ "$plasmalogin_dir_owner" = "plasmalogin:plasmalogin" ] \
-              || { echo "::error::/var/lib/plasmalogin 属主不是 plasmalogin:plasmalogin：$plasmalogin_dir_owner"; exit 1; }
+            [ "$plasmalogin_dir_owner" = "$plasmalogin_uid:$plasmalogin_gid" ] \
+              || { echo "::error::/var/lib/plasmalogin 属主不是 plasmalogin:plasmalogin：$plasmalogin_dir_owner（期望 $plasmalogin_uid:$plasmalogin_gid）"; exit 1; }
             [ "$plasmalogin_dir_mode" = "750" ] \
               || { echo "::error::/var/lib/plasmalogin 权限不是 750：$plasmalogin_dir_mode"; exit 1; }
           fi
