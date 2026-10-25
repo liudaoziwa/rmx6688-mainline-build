@@ -1,4 +1,4 @@
-# Fedora 44 ARM64 rootfs：Phosh 移动桌面 + 标准 GNOME 桌面。
+# Fedora 44 ARM64 rootfs：mobile=Phosh；standard=标准 GNOME（二选一）。
 # 只支持手动 workflow_dispatch 触发；push 不触发。
 
 name: build Fedora 44 ARM64 rootfs
@@ -40,13 +40,16 @@ name: build Fedora 44 ARM64 rootfs
         required: false
         default: false
         type: boolean
-      INSTALL_STANDARD_DESKTOP:
-        description: 额外安装标准桌面（默认开启；移动桌面仍为默认会话）
-        required: false
-        default: true
-        type: boolean
+      DESKTOP_VARIANT:
+        description: "桌面类型：mobile=Phosh；standard=标准 GNOME（二者互斥）"
+        required: true
+        default: mobile
+        type: choice
+        options:
+          - mobile
+          - standard
       STANDARD_PACKAGES:
-        description: 标准桌面包（空格分隔）
+        description: "标准 GNOME 桌面包（空格分隔；仅 DESKTOP_VARIANT=standard 时额外安装）"
         required: false
         default: gnome-shell gnome-session gdm
         type: string
@@ -54,7 +57,7 @@ permissions:
   contents: read
 jobs:
   fedora-rootfs:
-    name: build Fedora 44 ARM64 rootfs (Phosh + standard GNOME)
+    name: "build Fedora 44 ARM64 rootfs (${{ github.event.inputs.DESKTOP_VARIANT || 'mobile' }})"
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 240
     env:
@@ -66,7 +69,7 @@ jobs:
       FEDORA_PACKAGES: ${{ github.event.inputs.FEDORA_PACKAGES || 'stevia-phosh-osk-provider gnome-control-center gnome-keyring nautilus gnome-text-editor gnome-console eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer snapshot gnome-weather gnome-characters gnome-usage xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-fuse gvfs-mtp power-profiles-daemon upower accountsservice polkit iio-sensor-proxy geoclue2 bluez bluez-tools callaudiod pipewire pipewire-pulseaudio wireplumber alsa-ucm pipewire-alsa mesa-dri-drivers mesa-vulkan-drivers NetworkManager-wifi wpa_supplicant iwd openssh-server sudo vim-minimal less curl wget2-wget ca-certificates htop tzdata glibc-langpack-en glibc-langpack-zh-cn chrony systemd systemd-resolved dbus dbus-broker dbus-daemon google-noto-sans-cjk-fonts google-noto-serif-cjk-fonts google-noto-color-emoji-fonts dejavu-sans-fonts' }}
       FEDORA_RELEASE: '44'
       ROOTFS_LABEL: rootfs
-      INSTALL_STANDARD_DESKTOP: ${{ github.event.inputs.INSTALL_STANDARD_DESKTOP || 'true' }}
+      DESKTOP_VARIANT: ${{ github.event.inputs.DESKTOP_VARIANT || 'mobile' }}
       STANDARD_PACKAGES: ${{ github.event.inputs.STANDARD_PACKAGES || 'gnome-shell gnome-session gdm' }}
     steps:
     - name: Validate inputs
@@ -101,9 +104,20 @@ jobs:
           *:*) echo "::error::DESKTOP_PASSWORD 不能包含冒号"; exit 1 ;;
         esac
         test -n "$FEDORA_PACKAGES" || { echo "::error::FEDORA_PACKAGES 不能为空"; exit 1; }
+        case "$DESKTOP_VARIANT" in
+          mobile|standard) ;;
+          *) echo "::error::DESKTOP_VARIANT 只能是 mobile 或 standard，当前：$DESKTOP_VARIANT"; exit 1 ;;
+        esac
+        if [ "$DESKTOP_VARIANT" = "standard" ]; then
+          test -n "$STANDARD_PACKAGES" || { echo "::error::DESKTOP_VARIANT=standard 时 STANDARD_PACKAGES 不能为空"; exit 1; }
+        fi
         echo "fedora rootfs: release=$FEDORA_RELEASE size=$FEDORA_ROOTFS_SIZE hostname=$ROOTFS_HOSTNAME label=$ROOTFS_LABEL"
+        echo "desktop: variant=$DESKTOP_VARIANT"
         echo "desktop user: $FEDORA_DESKTOP_USER"
         echo "packages: $FEDORA_PACKAGES"
+        if [ "$DESKTOP_VARIANT" = "standard" ]; then
+          echo "standard packages: $STANDARD_PACKAGES"
+        fi
     - name: Free runner disk for Fedora rootfs
       run: |
         set -euo pipefail
@@ -222,47 +236,61 @@ jobs:
           --exclude='b43-*' \
           --exclude='dracut*')
 
-        echo "=== [2/8] 安装 Phosh 移动桌面组件 ==="
-        # 只装 Phosh 相关的组，不装完整 workstation/core 环境，
-        # 避免把服务器工具、SELinux 工具和设备固件带进手机 rootfs。
+        echo "=== [2/8] 安装桌面组件（mobile/standard 二选一） ==="
+        # 这些组对移动桌面和标准桌面都有用，先装。
         "${DNF[@]}" group install \
           "multimedia" \
           "networkmanager-submodules" \
           "fonts" \
           "input-methods"
-        if ! "${DNF[@]}" group install "phosh-desktop"; then
-          echo "::warning::Phosh 组安装失败，改为逐个安装移动桌面包"
-          # 列表覆盖 phosh-desktop 组的 mandatory/default 以及接口所需的运行时；
-          # 组安装被 linux-firmware 排除影响时仍能得到可用的手机桌面。
-          "${DNF[@]}" install \
-            phosh phoc phrog stevia stevia-phosh-osk-provider phosh-tour \
-            phosh-mobile-settings gnome-contacts gnome-maps \
-            gnome-software epiphany gnome-calculator gnome-calendar \
-            gnome-clocks gnome-console gnome-photos pavucontrol showtime \
-            feedbackd pinentry-gnome3 NetworkManager NetworkManager-wifi \
-            NetworkManager-bluetooth wpa_supplicant \
-            NetworkManager-config-connectivity-fedora systemd-udev \
-            dnf5 dnf5-plugins sudo pipewire pipewire-pulseaudio \
-            wireplumber alsa-ucm mesa-dri-drivers mesa-vulkan-drivers \
-            systemd systemd-resolved dbus dbus-broker dbus-daemon chrony \
-            cryptsetup gstreamer1-plugin-libav gstreamer1-plugin-openh264 \
-            gstreamer1-plugin-dav1d gstreamer1-plugins-bad-free \
-            gstreamer1-plugins-good gstreamer1-plugins-ugly-free \
-            alsa-utils PackageKit-gstreamer-plugin \
-            pipewire-config-raop pipewire-gstreamer pipewire-utils
-        fi
 
-        echo "=== [3/8] 安装移动端应用与运行时 ==="
-        read -r -a fedora_pkgs <<< "$FEDORA_PACKAGES"
-        "${DNF[@]}" install "${fedora_pkgs[@]}"
+        if [ "$ROOTFS_DESKTOP_VARIANT" = "mobile" ]; then
+          # 只装 Phosh 相关的组，不装完整 workstation/core 环境，
+          # 避免把服务器工具、SELinux 工具和设备固件带进手机 rootfs。
+          if ! "${DNF[@]}" group install "phosh-desktop"; then
+            echo "::warning::Phosh 组安装失败，改为逐个安装移动桌面包"
+            # 列表覆盖 phosh-desktop 组的 mandatory/default 以及接口所需的运行时；
+            # 组安装被 linux-firmware 排除影响时仍能得到可用的手机桌面。
+            "${DNF[@]}" install \
+              phosh phoc phrog stevia stevia-phosh-osk-provider phosh-tour \
+              phosh-mobile-settings gnome-contacts gnome-maps \
+              gnome-software epiphany gnome-calculator gnome-calendar \
+              gnome-clocks gnome-console gnome-photos pavucontrol showtime \
+              feedbackd pinentry-gnome3 NetworkManager NetworkManager-wifi \
+              NetworkManager-bluetooth wpa_supplicant \
+              NetworkManager-config-connectivity-fedora systemd-udev \
+              dnf5 dnf5-plugins sudo pipewire pipewire-pulseaudio \
+              wireplumber alsa-ucm mesa-dri-drivers mesa-vulkan-drivers \
+              systemd systemd-resolved dbus dbus-broker dbus-daemon chrony \
+              cryptsetup gstreamer1-plugin-libav gstreamer1-plugin-openh264 \
+              gstreamer1-plugin-dav1d gstreamer1-plugins-bad-free \
+              gstreamer1-plugins-good gstreamer1-plugins-ugly-free \
+              alsa-utils PackageKit-gstreamer-plugin \
+              pipewire-config-raop pipewire-gstreamer pipewire-utils
+          fi
 
-        # 额外安装标准桌面；默认 GNOME，与 Phosh 共存。
-        # 默认显示管理器仍是 phrog，默认会话仍是 Phosh。
-        if [ "${ROOTFS_INSTALL_STANDARD:-true}" = "true" ]; then
+          echo "=== [3/8] 安装移动端应用与运行时 ==="
+          read -r -a fedora_pkgs <<< "$FEDORA_PACKAGES"
+          "${DNF[@]}" install "${fedora_pkgs[@]}"
+        elif [ "$ROOTFS_DESKTOP_VARIANT" = "standard" ]; then
+          # 标准 GNOME：不装 phosh-desktop / phrog，改装标准桌面包。
+          echo "=== [3/8] 安装标准桌面与运行时 ==="
+          fedora_pkgs=()
+          for pkg in $FEDORA_PACKAGES; do
+            case "$pkg" in
+              stevia-phosh-osk-provider|callaudiod)
+                ;;
+              *)
+                fedora_pkgs+=("$pkg")
+                ;;
+            esac
+          done
+          "${DNF[@]}" install "${fedora_pkgs[@]}"
           read -r -a standard_pkgs <<< "$ROOTFS_STANDARD_PACKAGES"
           "${DNF[@]}" install "${standard_pkgs[@]}"
-          # 标准桌面可能带 gdm；移动版默认用 phrog。
-          systemctl disable gdm.service 2>/dev/null || true
+        else
+          echo "::error::未知 DESKTOP_VARIANT：$ROOTFS_DESKTOP_VARIANT"
+          exit 1
         fi
 
         echo "=== [4/8] 移除设备固件和内核残留 ==="
@@ -396,17 +424,28 @@ jobs:
           || { echo "::error::无法屏蔽 systemd-firstboot.service"; exit 1; }
         systemctl enable serial-getty@ttyS0.service 2>/dev/null || true
 
-        echo "=== [6/8] 配置 Phosh 手机登录与图形会话 ==="
-        # phrog.service 带 Alias=display-manager.service，是触摸友好的
-        # Phosh/greetd 登录器；登录后进入 phosh.desktop 手机会话。
-        # 标准桌面可能带 gdm；移动版默认用 phrog。
-        systemctl disable gdm.service 2>/dev/null || true
-        systemctl disable getty@tty1.service 2>/dev/null || true
-        # greetd 包自带的 greetd.service 也是 display-manager，避免两个登录器并存。
-        systemctl disable greetd.service 2>/dev/null || true
-        if ! systemctl enable phrog.service 2>/dev/null; then
-          echo "::error::无法启用 phrog.service，Phosh 手机登录器不可用"
-          exit 1
+        if [ "$ROOTFS_DESKTOP_VARIANT" = "mobile" ]; then
+          echo "=== [6/8] 配置 Phosh 手机登录与图形会话 ==="
+          # phrog.service 带 Alias=display-manager.service，是触摸友好的
+          # Phosh/greetd 登录器；登录后进入 phosh.desktop 手机会话。
+          systemctl disable gdm.service 2>/dev/null || true
+          systemctl disable getty@tty1.service 2>/dev/null || true
+          # greetd 包自带的 greetd.service 也是 display-manager，避免两个登录器并存。
+          systemctl disable greetd.service 2>/dev/null || true
+          if ! systemctl enable phrog.service 2>/dev/null; then
+            echo "::error::无法启用 phrog.service，Phosh 手机登录器不可用"
+            exit 1
+          fi
+        else
+          echo "=== [6/8] 配置标准 GNOME 登录与图形会话 ==="
+          # 标准 GNOME 使用 GDM，不装 Phosh/phrog。
+          systemctl disable phrog.service 2>/dev/null || true
+          systemctl disable greetd.service 2>/dev/null || true
+          systemctl disable getty@tty1.service 2>/dev/null || true
+          if ! systemctl enable gdm.service 2>/dev/null; then
+            echo "::error::无法启用 gdm.service，标准 GNOME 登录器不可用"
+            exit 1
+          fi
         fi
         systemctl set-default graphical.target \
           || ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target
@@ -418,17 +457,20 @@ jobs:
         rm -f /var/lib/systemd/random-seed
 
         echo "=== [7/8] 记录版本并清理 ==="
-        # stevia 可能是 phosh 的推荐/弱依赖，group 安装成功也不一定装；
         # rpm -q 缺包返回非零，这里不能让它中断收尾，否则版本文件不会留下来。
-        rpm -q phosh phoc phrog stevia > /etc/fedora-phosh-version.txt || true
-        chmod 0644 /etc/fedora-phosh-version.txt
+        if [ "$ROOTFS_DESKTOP_VARIANT" = "mobile" ]; then
+          rpm -q phosh phoc phrog stevia > /etc/fedora-desktop-version.txt || true
+        else
+          rpm -q gnome-shell gnome-session gdm > /etc/fedora-desktop-version.txt || true
+        fi
+        chmod 0644 /etc/fedora-desktop-version.txt
 
         "${DNF[@]}" clean all || true
         rm -rf /var/cache/dnf/* /var/cache/libdnf5/* /var/log/journal/*
         find /var/log -type f -exec truncate -s 0 {} + 2>/dev/null || true
         rm -rf /tmp/* /var/tmp/*
 
-        echo "=== [8/8] Fedora 44 + Phosh rootfs 准备完成 ==="
+        echo "=== [8/8] Fedora 44 rootfs 准备完成 ==="
         EOS
         sudo chmod +x rootfs/root/setup-fedora-rootfs.sh
     - name: Configure Fedora rootfs in native aarch64 chroot
@@ -477,6 +519,8 @@ jobs:
           ROOTFS_DESKTOP_USER="$FEDORA_DESKTOP_USER" \
           ROOTFS_DESKTOP_PASSWORD="${DESKTOP_PASSWORD:-$ROOT_PASSWORD}" \
           FEDORA_PACKAGES="$FEDORA_PACKAGES" \
+          ROOTFS_DESKTOP_VARIANT="$DESKTOP_VARIANT" \
+          ROOTFS_STANDARD_PACKAGES="$STANDARD_PACKAGES" \
           /bin/bash /root/setup-fedora-rootfs.sh
 
         cleanup
@@ -579,29 +623,46 @@ jobs:
           fi
         done
 
-        # Phosh 手机桌面：shell、合成器、触摸登录器、屏幕键盘必须齐全。
-        test -x rootfs/usr/bin/phosh-session \
-          || { echo "::error::缺少 /usr/bin/phosh-session"; exit 1; }
-        test -x rootfs/usr/bin/phoc \
-          || { echo "::error::缺少 /usr/bin/phoc"; exit 1; }
-        test -x rootfs/usr/bin/phrog \
-          || { echo "::error::缺少 /usr/bin/phrog"; exit 1; }
-        test -f rootfs/usr/share/wayland-sessions/phosh.desktop \
-          || { echo "::error::缺少 Phosh Wayland 会话文件"; exit 1; }
-        test -f rootfs/usr/share/gnome-session/sessions/phosh.session \
-          || { echo "::error::缺少 phosh.session"; exit 1; }
-        test -f rootfs/usr/lib/systemd/system/phrog.service \
-          || { echo "::error::缺少 phrog.service"; exit 1; }
-        test -f rootfs/etc/fedora-phosh-version.txt \
-          || { echo "::error::缺少 fedora-phosh-version.txt"; exit 1; }
-        cat rootfs/etc/fedora-phosh-version.txt
-        grep -q '^phosh-' rootfs/etc/fedora-phosh-version.txt \
-          || { echo "::error::Phosh 未正确安装"; exit 1; }
-
-        test -L rootfs/etc/systemd/system/display-manager.service \
-          || { echo "::error::display-manager.service 未启用"; exit 1; }
-        readlink rootfs/etc/systemd/system/display-manager.service | grep -q 'phrog.service' \
-          || { echo "::error::display-manager.service 不是 phrog"; exit 1; }
+        if [ "$DESKTOP_VARIANT" = "mobile" ]; then
+          # Phosh 手机桌面：shell、合成器、触摸登录器、屏幕键盘必须齐全。
+          test -x rootfs/usr/bin/phosh-session \
+            || { echo "::error::缺少 /usr/bin/phosh-session"; exit 1; }
+          test -x rootfs/usr/bin/phoc \
+            || { echo "::error::缺少 /usr/bin/phoc"; exit 1; }
+          test -x rootfs/usr/bin/phrog \
+            || { echo "::error::缺少 /usr/bin/phrog"; exit 1; }
+          test -f rootfs/usr/share/wayland-sessions/phosh.desktop \
+            || { echo "::error::缺少 Phosh Wayland 会话文件"; exit 1; }
+          test -f rootfs/usr/share/gnome-session/sessions/phosh.session \
+            || { echo "::error::缺少 phosh.session"; exit 1; }
+          test -f rootfs/usr/lib/systemd/system/phrog.service \
+            || { echo "::error::缺少 phrog.service"; exit 1; }
+          test -f rootfs/etc/fedora-desktop-version.txt \
+            || { echo "::error::缺少 fedora-desktop-version.txt"; exit 1; }
+          cat rootfs/etc/fedora-desktop-version.txt
+          grep -q '^phosh-' rootfs/etc/fedora-desktop-version.txt \
+            || { echo "::error::Phosh 未正确安装"; exit 1; }
+          test -L rootfs/etc/systemd/system/display-manager.service \
+            || { echo "::error::display-manager.service 未启用"; exit 1; }
+          readlink rootfs/etc/systemd/system/display-manager.service | grep -q 'phrog.service' \
+            || { echo "::error::display-manager.service 不是 phrog"; exit 1; }
+        else
+          test -x rootfs/usr/bin/gnome-shell \
+            || { echo "::error::缺少 /usr/bin/gnome-shell"; exit 1; }
+          test -f rootfs/usr/share/wayland-sessions/gnome.desktop \
+            || { echo "::error::缺少 gnome.desktop"; exit 1; }
+          test -f rootfs/usr/share/gnome-session/sessions/gnome.session \
+            || { echo "::error::缺少 gnome.session"; exit 1; }
+          test -f rootfs/etc/fedora-desktop-version.txt \
+            || { echo "::error::缺少 fedora-desktop-version.txt"; exit 1; }
+          cat rootfs/etc/fedora-desktop-version.txt
+          grep -q '^gnome-shell-' rootfs/etc/fedora-desktop-version.txt \
+            || { echo "::error::GNOME Shell 未正确安装"; exit 1; }
+          test -L rootfs/etc/systemd/system/display-manager.service \
+            || { echo "::error::display-manager.service 未启用"; exit 1; }
+          readlink rootfs/etc/systemd/system/display-manager.service | grep -q 'gdm.service' \
+            || { echo "::error::display-manager.service 不是 gdm"; exit 1; }
+        fi
         readlink rootfs/etc/systemd/system/default.target | grep -q 'graphical.target' \
           || { echo "::error::默认 systemd target 不是 graphical.target"; exit 1; }
 
@@ -631,12 +692,14 @@ jobs:
           || { echo "::error::systemd-firstboot.service 未屏蔽"; exit 1; }
         test "$(readlink rootfs/etc/systemd/system/systemd-firstboot.service)" = "/dev/null" \
           || { echo "::error::systemd-firstboot.service 未 mask 到 /dev/null"; exit 1; }
-        grep -q '^greetd:' rootfs/etc/passwd \
-          || { echo "::error::greetd 用户不存在"; exit 1; }
+        if [ "$DESKTOP_VARIANT" = "mobile" ]; then
+          grep -q '^greetd:' rootfs/etc/passwd \
+            || { echo "::error::greetd 用户不存在"; exit 1; }
+        fi
 
         # 版本信息留给 job summary，然后从最终镜像里删掉。
-        cp rootfs/etc/fedora-phosh-version.txt fedora-phosh-version.txt
-        sudo rm -f rootfs/etc/fedora-phosh-version.txt
+        cp rootfs/etc/fedora-desktop-version.txt fedora-desktop-version.txt
+        sudo rm -f rootfs/etc/fedora-desktop-version.txt
         echo "--- /sbin/init ---"
         ls -l rootfs/sbin/init
         echo "--- modules ---"
@@ -718,29 +781,35 @@ jobs:
         compression-level: 0
     - name: Write job summary
       run: |
+        if [ "$DESKTOP_VARIANT" = "mobile" ]; then
+          desktop_desc="Phosh 手机 shell + phrog 触摸登录器 + Stevia 屏幕键盘"
+        else
+          desktop_desc="标准 GNOME + GDM"
+        fi
         {
-          echo "## Fedora 44 ARM64 rootfs (Phosh)"
+          echo "## Fedora 44 ARM64 rootfs ($DESKTOP_VARIANT)"
           echo ""
           echo "| 项目 | 值 |"
           echo "|------|----|"
           echo "| 构建环境 | GitHub 原生 arm64（\`ubuntu-24.04-arm\`） |"
           echo "| 发行版 | Fedora Linux 44（aarch64） |"
-          echo "| 桌面环境 | Phosh 手机 shell + phrog 触摸登录器 + Stevia 屏幕键盘 |"
+          echo "| 桌面环境 | $desktop_desc |"
           echo "| 桌面用户 | \`$FEDORA_DESKTOP_USER\` |"
           echo "| 镜像大小 | \`$FEDORA_ROOTFS_SIZE\` |"
           echo "| ext4 label | \`$ROOTFS_LABEL\` |"
           echo "| 主机名 | \`$ROOTFS_HOSTNAME\` |"
-          echo "| 移动端适配 | 手机布局 + OSK + 触摸登录 + 自动旋转（iio-sensor-proxy） |"
+          echo "| 语言 | zh_CN.UTF-8（保留 en_US.UTF-8） |"
+          echo "| 缩放 | 2x |"
           echo "| 固件 | 未安装设备固件；仅保留 wireless-regdb 监管数据库（NetworkManager-wifi 依赖） |"
           echo "| 内核模块 | 未安装（按设计） |"
           echo ""
           echo '```'
-          cat fedora-phosh-version.txt
+          cat fedora-desktop-version.txt
           ls -lh fedora-rootfs.img fedora-rootfs-sparse.img
           echo '```'
           echo ""
           echo "刷写：把 \`fedora-rootfs-sparse.img\` 刷到 GPT 名为 \`rootfs\` 的分区，"
           echo "或 \`fastboot flash <rootfs 分区> fedora-rootfs-sparse.img\`。"
           echo ""
-          echo "登录界面由 phrog（Phosh + greetd）提供，登录后进入 Phosh 手机会话。"
+          echo "注意：mobile 与 standard 二选一，不会同时安装。"
         } >> "$GITHUB_STEP_SUMMARY"

@@ -1,4 +1,4 @@
-# Ubuntu 26.04 ARM64 rootfs：Phosh 移动桌面 + 标准 GNOME 桌面。
+# Ubuntu 26.04 ARM64 rootfs：mobile=Phosh；standard=标准 GNOME（二选一）。
 # 只支持手动 workflow_dispatch 触发；push 不触发。
 
 name: build Ubuntu 26.04 ARM64 rootfs
@@ -40,15 +40,18 @@ name: build Ubuntu 26.04 ARM64 rootfs
         required: false
         default: false
         type: boolean
-      INSTALL_STANDARD_DESKTOP:
-        description: 额外安装标准桌面（默认开启；移动桌面仍为默认会话）
-        required: false
-        default: true
-        type: boolean
+      DESKTOP_VARIANT:
+        description: "桌面类型：mobile=Phosh；standard=标准 GNOME（二者互斥）"
+        required: true
+        default: mobile
+        type: choice
+        options:
+          - mobile
+          - standard
       STANDARD_PACKAGES:
-        description: 标准桌面包（空格分隔）
+        description: "标准 GNOME 桌面包（空格分隔；仅 DESKTOP_VARIANT=standard 时额外安装）"
         required: false
-        default: gnome-shell gnome-session gdm3
+        default: gnome-shell gnome-session gdm3 ubuntu-session
         type: string
 permissions:
   contents: read
@@ -59,7 +62,7 @@ env:
   UBUNTU_SUITE: resolute
 jobs:
   ubuntu-rootfs:
-    name: build Ubuntu 26.04 ARM64 rootfs (Phosh + standard GNOME)
+    name: "build Ubuntu 26.04 ARM64 rootfs (${{ github.event.inputs.DESKTOP_VARIANT || 'mobile' }})"
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     env:
@@ -70,8 +73,8 @@ jobs:
       DESKTOP_PASSWORD: ${{ github.event.inputs.DESKTOP_PASSWORD || '' }}
       UBUNTU_PACKAGES: ${{ github.event.inputs.UBUNTU_PACKAGES || 'systemd systemd-sysv systemd-resolved systemd-timesyncd mount login kmod udev dbus dbus-user-session libpam-systemd libnss-systemd phosh phrog phosh-osk-stevia phosh-mobile-settings phosh-mobile-tweaks phosh-plugins greetd gnome-session-bin gnome-session-common gnome-settings-daemon gnome-shell-common gnome-keyring gnome-bluetooth-sendto feedbackd callaudiod network-manager bluez rfkill iio-sensor-proxy geoclue-2.0 pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-libcamera wireplumber libspa-0.2-bluetooth alsa-ucm-conf mesa-utils libgl1-mesa-dri libegl-mesa0 libgles2 mesa-vulkan-drivers fonts-lato fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core gnome-contacts gnome-maps gnome-software nautilus gnome-console gnome-text-editor gnome-calculator gnome-clocks gnome-weather gnome-calendar gnome-characters gnome-usage eog gnome-disk-utility gnome-system-monitor gnome-logs gnome-font-viewer gnome-snapshot xdg-desktop-portal-gnome xdg-desktop-portal-gtk gvfs gvfs-backends power-profiles-daemon upower accountsservice polkitd openssh-server sudo ca-certificates curl wget less vim htop locales language-pack-zh-hans language-pack-en tzdata at-spi2-core unzip systemd-hwe-hwdb libacl1 libseccomp2' }}
       ROOTFS_LABEL: rootfs
-      INSTALL_STANDARD_DESKTOP: ${{ github.event.inputs.INSTALL_STANDARD_DESKTOP || 'true' }}
-      STANDARD_PACKAGES: ${{ github.event.inputs.STANDARD_PACKAGES || 'gnome-shell gnome-session gdm3' }}
+      DESKTOP_VARIANT: ${{ github.event.inputs.DESKTOP_VARIANT || 'mobile' }}
+      STANDARD_PACKAGES: ${{ github.event.inputs.STANDARD_PACKAGES || 'gnome-shell gnome-session gdm3 ubuntu-session' }}
     steps:
     - name: Validate inputs
       run: |
@@ -105,10 +108,20 @@ jobs:
           *:*) echo "::error::DESKTOP_PASSWORD 不能包含冒号"; exit 1 ;;
         esac
         test -n "$UBUNTU_PACKAGES" || { echo "::error::UBUNTU_PACKAGES 不能为空"; exit 1; }
+        case "$DESKTOP_VARIANT" in
+          mobile|standard) ;;
+          *) echo "::error::DESKTOP_VARIANT 只能是 mobile 或 standard，当前：$DESKTOP_VARIANT"; exit 1 ;;
+        esac
+        if [ "$DESKTOP_VARIANT" = "standard" ]; then
+          test -n "$STANDARD_PACKAGES" || { echo "::error::DESKTOP_VARIANT=standard 时 STANDARD_PACKAGES 不能为空"; exit 1; }
+        fi
         echo "ubuntu rootfs: size=$UBUNTU_ROOTFS_SIZE hostname=$ROOTFS_HOSTNAME label=$ROOTFS_LABEL"
-        echo "desktop: Phosh (package-based, no source build)"
+        echo "desktop: variant=$DESKTOP_VARIANT"
         echo "desktop user: $UBUNTU_DESKTOP_USER"
         echo "packages: $UBUNTU_PACKAGES"
+        if [ "$DESKTOP_VARIANT" = "standard" ]; then
+          echo "standard packages: $STANDARD_PACKAGES"
+        fi
     - name: Free runner disk for Ubuntu rootfs
       run: |
         set -euo pipefail
@@ -186,54 +199,79 @@ jobs:
 
         apt-get update
 
-        echo "=== [2/7] 安装 Phosh 及移动端组件 ==="
+        echo "=== [2/7] 安装桌面组件（mobile/standard 二选一） ==="
         # ubuntu-base 只带 libsystemd0，没有 systemd / systemctl / /sbin/init，
         # 必须显式安装 systemd + systemd-sysv，否则镜像无法启动。
-        #
-        # Ubuntu 仓库没有 gnome-shell-mobile；这里全部使用 Phosh 二进制包。
-        # phrog/phosh-session 会调用 dbus-run-session，Ubuntu 26.04 里它由
-        # dbus/dbus-daemon 提供，所以显式安装 dbus + dbus-user-session。
         read -r -a requested_pkgs <<< "$ROOTFS_PACKAGES"
         ubuntu_pkgs=()
-        for pkg in "${requested_pkgs[@]}"; do
-          ubuntu_pkgs+=("$pkg")
-        done
-        # 用户自定义包列表可能漏掉 Phosh 核心组件；桌面必须依赖它们。
-        for pkg in phosh phrog phosh-osk-stevia phosh-mobile-settings phosh-mobile-tweaks phosh-plugins greetd dbus dbus-user-session; do
-          case " ${ubuntu_pkgs[*]} " in
-            *" $pkg "*) ;;
-            *) ubuntu_pkgs+=("$pkg") ;;
-          esac
-        done
+        if [ "$ROOTFS_DESKTOP_VARIANT" = "mobile" ]; then
+          # Ubuntu 仓库没有 gnome-shell-mobile；mobile 用 Phosh 二进制包。
+          # phrog/phosh-session 会调用 dbus-run-session，Ubuntu 26.04 里它由
+          # dbus/dbus-daemon 提供，所以显式安装 dbus + dbus-user-session。
+          for pkg in "${requested_pkgs[@]}"; do
+            ubuntu_pkgs+=("$pkg")
+          done
+          # 用户自定义包列表可能漏掉 Phosh 核心组件；桌面必须依赖它们。
+          for pkg in phosh phrog phosh-osk-stevia phosh-mobile-settings phosh-mobile-tweaks phosh-plugins greetd dbus dbus-user-session; do
+            case " ${ubuntu_pkgs[*]} " in
+              *" $pkg "*) ;;
+              *) ubuntu_pkgs+=("$pkg") ;;
+            esac
+          done
+        elif [ "$ROOTFS_DESKTOP_VARIANT" = "standard" ]; then
+          # standard 不装 Phosh/greetd 等移动桌面包，只保留基础运行时。
+          for pkg in "${requested_pkgs[@]}"; do
+            case "$pkg" in
+              phosh|phrog|phosh-*|greetd|feedbackd|callaudiod|mmsd-tng|gnome-calls|chatty)
+                ;;
+              *)
+                ubuntu_pkgs+=("$pkg")
+                ;;
+            esac
+          done
+        else
+          echo "::error::未知 DESKTOP_VARIANT：$ROOTFS_DESKTOP_VARIANT"
+          exit 1
+        fi
         apt-get install -y --no-install-recommends "${ubuntu_pkgs[@]}"
 
-        # 额外安装标准桌面；默认 GNOME，与 Phosh 共存。
-        # 默认显示管理器仍是 greetd/phrog，默认会话仍是 Phosh。
-        if [ "${ROOTFS_INSTALL_STANDARD:-true}" = "true" ]; then
+        if [ "$ROOTFS_DESKTOP_VARIANT" = "standard" ]; then
           read -r -a standard_pkgs <<< "$ROOTFS_STANDARD_PACKAGES"
           apt-get install -y --no-install-recommends "${standard_pkgs[@]}"
-          # 标准桌面可能带 gdm；移动版默认用 greetd，避免两个 DM 冲突。
-          systemctl disable gdm.service gdm3.service 2>/dev/null || true
         fi
 
-        echo "=== [3/7] 校验 Phosh 桌面组件 ==="
-        test -x /usr/bin/phosh-session \
-          || { echo "::error::缺少 /usr/bin/phosh-session"; exit 1; }
-        test -x /usr/bin/phoc \
-          || { echo "::error::缺少 /usr/bin/phoc"; exit 1; }
-        test -x /usr/bin/phrog \
-          || { echo "::error::缺少 /usr/bin/phrog"; exit 1; }
-        test -x /usr/bin/dbus-run-session \
-          || { echo "::error::缺少 /usr/bin/dbus-run-session"; exit 1; }
-        test -f /usr/share/wayland-sessions/phosh.desktop \
-          || { echo "::error::缺少 phosh.desktop"; exit 1; }
-        test -f /usr/share/gnome-session/sessions/phosh.session \
-          || { echo "::error::缺少 phosh.session"; exit 1; }
-        test -f /etc/greetd/phrog.toml \
-          || { echo "::error::缺少 /etc/greetd/phrog.toml"; exit 1; }
-        echo "phosh: $(dpkg-query -W -f='${Version}' phosh)"
-        echo "phrog: $(dpkg-query -W -f='${Version}' phrog)"
-        echo "phosh-osk-stevia: $(dpkg-query -W -f='${Version}' phosh-osk-stevia)"
+        echo "=== [3/7] 校验桌面组件 ==="
+        if [ "$ROOTFS_DESKTOP_VARIANT" = "mobile" ]; then
+          test -x /usr/bin/phosh-session \
+            || { echo "::error::缺少 /usr/bin/phosh-session"; exit 1; }
+          test -x /usr/bin/phoc \
+            || { echo "::error::缺少 /usr/bin/phoc"; exit 1; }
+          test -x /usr/bin/phrog \
+            || { echo "::error::缺少 /usr/bin/phrog"; exit 1; }
+          test -x /usr/bin/dbus-run-session \
+            || { echo "::error::缺少 /usr/bin/dbus-run-session"; exit 1; }
+          test -f /usr/share/wayland-sessions/phosh.desktop \
+            || { echo "::error::缺少 phosh.desktop"; exit 1; }
+          test -f /usr/share/gnome-session/sessions/phosh.session \
+            || { echo "::error::缺少 phosh.session"; exit 1; }
+          test -f /etc/greetd/phrog.toml \
+            || { echo "::error::缺少 /etc/greetd/phrog.toml"; exit 1; }
+          echo "phosh: $(dpkg-query -W -f='${Version}' phosh)"
+          echo "phrog: $(dpkg-query -W -f='${Version}' phrog)"
+          echo "phosh-osk-stevia: $(dpkg-query -W -f='${Version}' phosh-osk-stevia)"
+        else
+          test -x /usr/bin/gnome-shell \
+            || { echo "::error::缺少 /usr/bin/gnome-shell"; exit 1; }
+          test -x /usr/bin/dbus-run-session \
+            || { echo "::error::缺少 /usr/bin/dbus-run-session"; exit 1; }
+          test -f /usr/share/wayland-sessions/gnome.desktop \
+            || { echo "::error::缺少 gnome.desktop"; exit 1; }
+          test -f /usr/share/gnome-session/sessions/gnome.session \
+            || { echo "::error::缺少 gnome.session"; exit 1; }
+          test -x /usr/bin/gdm3 -o -x /usr/bin/gdm \
+            || { echo "::error::缺少 GDM"; exit 1; }
+          echo "gnome-shell: $(dpkg-query -W -f='${Version}' gnome-shell)"
+        fi
 
         echo "=== [4/7] 系统配置与清理 ==="
         printf '%s\n' "$ROOTFS_HOSTNAME" > /etc/hostname
@@ -326,14 +364,24 @@ jobs:
         systemctl disable getty@tty1.service 2>/dev/null || true
         systemctl disable getty@tty7.service 2>/dev/null || true
 
-        # Phosh 跑 Wayland；phrog 是 greetd 的触摸 greeter，由 greetd 拉起。
-        # 标准桌面可能带 gdm；移动版默认用 greetd/phrog。
-        systemctl disable gdm.service gdm3.service 2>/dev/null || true
-        if systemctl enable greetd.service 2>/dev/null; then
-          echo "display manager: greetd/phrog enabled"
+        if [ "$ROOTFS_DESKTOP_VARIANT" = "mobile" ]; then
+          # Phosh 跑 Wayland；phrog 是 greetd 的触摸 greeter，由 greetd 拉起。
+          systemctl disable gdm.service gdm3.service 2>/dev/null || true
+          if systemctl enable greetd.service 2>/dev/null; then
+            echo "display manager: greetd/phrog enabled"
+          else
+            echo "::error::无法启用 greetd.service"
+            exit 1
+          fi
         else
-          echo "::error::无法启用 greetd.service"
-          exit 1
+          # 标准 GNOME 使用 GDM，不装 Phosh/greetd。
+          systemctl disable greetd.service 2>/dev/null || true
+          if systemctl enable gdm3.service 2>/dev/null || systemctl enable gdm.service 2>/dev/null; then
+            echo "display manager: gdm enabled"
+          else
+            echo "::error::无法启用 gdm3.service / gdm.service"
+            exit 1
+          fi
         fi
         systemctl set-default graphical.target \
           || ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target
@@ -418,6 +466,8 @@ jobs:
           ROOTFS_DESKTOP_USER="$UBUNTU_DESKTOP_USER" \
           ROOTFS_DESKTOP_PASSWORD="${DESKTOP_PASSWORD:-$ROOT_PASSWORD}" \
           ROOTFS_PACKAGES="$UBUNTU_PACKAGES" \
+          ROOTFS_DESKTOP_VARIANT="$DESKTOP_VARIANT" \
+          ROOTFS_STANDARD_PACKAGES="$STANDARD_PACKAGES" \
           /bin/bash /root/setup-ubuntu-rootfs.sh
 
         cleanup
@@ -506,32 +556,44 @@ jobs:
           fi
         done
 
-        # Phosh：必须是仓库二进制包，并且桌面组件齐全。
-        test -x rootfs/usr/bin/phosh-session \
-          || { echo "::error::缺少 /usr/bin/phosh-session"; exit 1; }
-        test -x rootfs/usr/bin/phoc \
-          || { echo "::error::缺少 /usr/bin/phoc"; exit 1; }
-        test -x rootfs/usr/bin/phrog \
-          || { echo "::error::缺少 /usr/bin/phrog"; exit 1; }
-        test -x rootfs/usr/bin/dbus-run-session \
-          || { echo "::error::缺少 /usr/bin/dbus-run-session"; exit 1; }
-        test -f rootfs/usr/share/wayland-sessions/phosh.desktop \
-          || { echo "::error::缺少 Phosh Wayland 会话文件"; exit 1; }
-        test -f rootfs/usr/share/gnome-session/sessions/phosh.session \
-          || { echo "::error::缺少 phosh.session"; exit 1; }
-        test -f rootfs/etc/greetd/phrog.toml \
-          || { echo "::error::缺少 /etc/greetd/phrog.toml"; exit 1; }
-        test -x rootfs/usr/bin/phosh-mobile-settings \
-          || { echo "::error::缺少 phosh-mobile-settings（设置入口）"; exit 1; }
-        test -f rootfs/etc/phosh/phoc.ini \
-          || { echo "::error::缺少 /etc/phosh/phoc.ini（DSI 缩放配置）"; exit 1; }
-        grep -q '^scale = 2$' rootfs/etc/phosh/phoc.ini \
-          || { echo "::error::phoc.ini 未配置 DSI-1 scale=2"; exit 1; }
-
-        test -L rootfs/etc/systemd/system/display-manager.service \
-          || { echo "::error::display-manager.service 未启用"; exit 1; }
-        readlink rootfs/etc/systemd/system/display-manager.service | grep -q 'greetd' \
-          || { echo "::error::display-manager.service 不是 greetd"; exit 1; }
+        if [ "$DESKTOP_VARIANT" = "mobile" ]; then
+          # Phosh：必须是仓库二进制包，并且桌面组件齐全。
+          test -x rootfs/usr/bin/phosh-session \
+            || { echo "::error::缺少 /usr/bin/phosh-session"; exit 1; }
+          test -x rootfs/usr/bin/phoc \
+            || { echo "::error::缺少 /usr/bin/phoc"; exit 1; }
+          test -x rootfs/usr/bin/phrog \
+            || { echo "::error::缺少 /usr/bin/phrog"; exit 1; }
+          test -x rootfs/usr/bin/dbus-run-session \
+            || { echo "::error::缺少 /usr/bin/dbus-run-session"; exit 1; }
+          test -f rootfs/usr/share/wayland-sessions/phosh.desktop \
+            || { echo "::error::缺少 Phosh Wayland 会话文件"; exit 1; }
+          test -f rootfs/usr/share/gnome-session/sessions/phosh.session \
+            || { echo "::error::缺少 phosh.session"; exit 1; }
+          test -f rootfs/etc/greetd/phrog.toml \
+            || { echo "::error::缺少 /etc/greetd/phrog.toml"; exit 1; }
+          test -x rootfs/usr/bin/phosh-mobile-settings \
+            || { echo "::error::缺少 phosh-mobile-settings（设置入口）"; exit 1; }
+          test -f rootfs/etc/phosh/phoc.ini \
+            || { echo "::error::缺少 /etc/phosh/phoc.ini（DSI 缩放配置）"; exit 1; }
+          grep -q '^scale = 2$' rootfs/etc/phosh/phoc.ini \
+            || { echo "::error::phoc.ini 未配置 DSI-1 scale=2"; exit 1; }
+          test -L rootfs/etc/systemd/system/display-manager.service \
+            || { echo "::error::display-manager.service 未启用"; exit 1; }
+          readlink rootfs/etc/systemd/system/display-manager.service | grep -q 'greetd' \
+            || { echo "::error::display-manager.service 不是 greetd"; exit 1; }
+        else
+          test -x rootfs/usr/bin/gnome-shell \
+            || { echo "::error::缺少 /usr/bin/gnome-shell"; exit 1; }
+          test -f rootfs/usr/share/wayland-sessions/gnome.desktop \
+            || { echo "::error::缺少 gnome.desktop"; exit 1; }
+          test -f rootfs/usr/share/gnome-session/sessions/gnome.session \
+            || { echo "::error::缺少 gnome.session"; exit 1; }
+          test -L rootfs/etc/systemd/system/display-manager.service \
+            || { echo "::error::display-manager.service 未启用"; exit 1; }
+          readlink rootfs/etc/systemd/system/display-manager.service | grep -q 'gdm' \
+            || { echo "::error::display-manager.service 不是 gdm"; exit 1; }
+        fi
         readlink rootfs/etc/systemd/system/default.target | grep -q 'graphical.target' \
           || { echo "::error::默认 systemd target 不是 graphical.target"; exit 1; }
 
@@ -637,19 +699,25 @@ jobs:
         compression-level: 0
     - name: Write job summary
       run: |
+        if [ "$DESKTOP_VARIANT" = "mobile" ]; then
+          desktop_desc="Phosh + phrog + Stevia OSK（Wayland，仓库二进制包）"
+        else
+          desktop_desc="标准 GNOME + GDM（Wayland，仓库二进制包）"
+        fi
         {
-          echo "## Ubuntu 26.04 ARM64 rootfs (Phosh)"
+          echo "## Ubuntu 26.04 ARM64 rootfs ($DESKTOP_VARIANT)"
           echo ""
           echo "| 项目 | 值 |"
           echo "|------|----|"
           echo "| 构建环境 | GitHub 原生 arm64（\`ubuntu-24.04-arm\`） |"
           echo "| 发行版 | Ubuntu 26.04 LTS（Resolute Raccoon, \`$UBUNTU_SUITE\`）arm64 |"
-          echo "| 桌面环境 | Phosh + phrog + Stevia OSK（Wayland，仓库二进制包） |"
+          echo "| 桌面环境 | $desktop_desc |"
           echo "| 桌面用户 | \`$UBUNTU_DESKTOP_USER\` |"
           echo "| 镜像大小 | \`$UBUNTU_ROOTFS_SIZE\` |"
           echo "| ext4 label | \`$ROOTFS_LABEL\` |"
           echo "| 主机名 | \`$ROOTFS_HOSTNAME\` |"
-          echo "| 移动端适配 | Phosh 手机 shell + 触摸键盘 + 自动旋转（iio-sensor-proxy） |"
+          echo "| 语言 | zh_CN.UTF-8（保留 en_US.UTF-8） |"
+          echo "| 缩放 | 2x |"
           echo "| 固件 | 未安装（按设计） |"
           echo "| 内核模块 | 未安装（按设计） |"
           echo ""
@@ -660,5 +728,5 @@ jobs:
           echo "刷写：把 \`ubuntu-rootfs-sparse.img\` 刷到 GPT 名为 \`rootfs\` 的分区，"
           echo "或 \`fastboot flash <rootfs 分区> ubuntu-rootfs-sparse.img\`。"
           echo ""
-          echo "注意：本 job 使用 Ubuntu 仓库 Phosh 二进制包，不源码编译 GNOME Shell Mobile。"
+          echo "注意：mobile 与 standard 二选一，不会同时安装。"
         } >> "$GITHUB_STEP_SUMMARY"

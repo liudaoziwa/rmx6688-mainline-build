@@ -1,4 +1,4 @@
-# Arch Linux ARM64 rootfs：Plasma Mobile + 标准 KDE Plasma。
+# Arch Linux ARM64 rootfs：mobile=Plasma Mobile；standard=标准 KDE Plasma（二选一）。
 # 只支持手动 workflow_dispatch 触发；push 不触发。
 
 name: build Arch Linux ARM64 rootfs
@@ -10,13 +10,16 @@ name: build Arch Linux ARM64 rootfs
         required: true
         default: 5G
         type: string
-      INSTALL_KDE:
-        description: 安装 KDE Plasma Mobile 桌面（默认开启）
-        required: false
-        default: true
-        type: boolean
+      DESKTOP_VARIANT:
+        description: "桌面类型：mobile=Plasma Mobile；standard=标准 KDE Plasma（二者互斥）"
+        required: true
+        default: mobile
+        type: choice
+        options:
+          - mobile
+          - standard
       KDE_PACKAGES:
-        description: KDE Plasma Mobile 桌面包（空格分隔；仅在 INSTALL_KDE=true 时安装；默认含 konsole 图形终端）
+        description: KDE Plasma Mobile 桌面包（空格分隔；仅 DESKTOP_VARIANT=mobile 时安装；默认含 konsole 图形终端）
         required: false
         default: plasma-mobile plasma-settings plasma-login-manager kscreen bluedevil mesa pipewire pipewire-pulse wireplumber noto-fonts-cjk ttf-dejavu konsole alsa-ucm-conf
         type: string
@@ -50,15 +53,10 @@ name: build Arch Linux ARM64 rootfs
         required: false
         default: false
         type: boolean
-      INSTALL_STANDARD_DESKTOP:
-        description: 额外安装标准桌面（默认开启；移动桌面仍为默认会话）
-        required: false
-        default: true
-        type: boolean
       STANDARD_PACKAGES:
-        description: 标准桌面包（空格分隔）
+        description: 标准桌面包（空格分隔；仅 DESKTOP_VARIANT=standard 时安装）
         required: false
-        default: plasma
+        default: plasma konsole
         type: string
 permissions:
   contents: read
@@ -67,21 +65,20 @@ env:
   ALARM_TARBALL_FALLBACK: https://mirrors.ustc.edu.cn/archlinuxarm/os/ArchLinuxARM-aarch64-latest.tar.gz
 jobs:
   rootfs:
-    name: build Arch Linux ARM64 rootfs (Plasma Mobile + standard KDE)
+    name: "build Arch Linux ARM64 rootfs (${{ github.event.inputs.DESKTOP_VARIANT || 'mobile' }})"
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     env:
       ROOTFS_SIZE: ${{ github.event.inputs.ROOTFS_SIZE || '5G' }}
       ROOTFS_HOSTNAME: ${{ github.event.inputs.ROOTFS_HOSTNAME || 'rmx6688' }}
       ROOT_PASSWORD: ${{ github.event.inputs.ROOT_PASSWORD || '1234' }}
-      INSTALL_KDE: ${{ github.event.inputs.INSTALL_KDE || 'true' }}
+      DESKTOP_VARIANT: ${{ github.event.inputs.DESKTOP_VARIANT || 'mobile' }}
       KDE_PACKAGES: ${{ github.event.inputs.KDE_PACKAGES || 'plasma-mobile plasma-settings plasma-login-manager kscreen bluedevil mesa pipewire pipewire-pulse wireplumber noto-fonts-cjk ttf-dejavu konsole alsa-ucm-conf' }}
       DESKTOP_USER: ${{ github.event.inputs.DESKTOP_USER || 'arch' }}
       DESKTOP_PASSWORD: ${{ github.event.inputs.DESKTOP_PASSWORD || '' }}
       EXTRA_PACKAGES: ${{ github.event.inputs.EXTRA_PACKAGES || 'networkmanager wpa_supplicant iwd openssh sudo vim less curl wget ca-certificates htop bluez bluez-utils iw tzdata' }}
       ROOTFS_LABEL: rootfs
-      INSTALL_STANDARD_DESKTOP: ${{ github.event.inputs.INSTALL_STANDARD_DESKTOP || 'true' }}
-      STANDARD_PACKAGES: ${{ github.event.inputs.STANDARD_PACKAGES || 'plasma' }}
+      STANDARD_PACKAGES: ${{ github.event.inputs.STANDARD_PACKAGES || 'plasma konsole' }}
     steps:
     - name: Validate inputs
       run: |
@@ -103,28 +100,34 @@ jobs:
         case "$ROOT_PASSWORD" in
           *:*) echo "::error::ROOT_PASSWORD 不能包含冒号"; exit 1 ;;
         esac
-        case "$INSTALL_KDE" in
-          true|false) ;;
-          *) echo "::error::INSTALL_KDE 只能是 true 或 false，当前：$INSTALL_KDE"; exit 1 ;;
+        case "$DESKTOP_VARIANT" in
+          mobile|standard) ;;
+          *) echo "::error::DESKTOP_VARIANT 只能是 mobile 或 standard，当前：$DESKTOP_VARIANT"; exit 1 ;;
         esac
-        if [ "$INSTALL_KDE" = "true" ]; then
-          test -n "$KDE_PACKAGES" || { echo "::error::INSTALL_KDE=true 时 KDE_PACKAGES 不能为空"; exit 1; }
-          if ! [[ "$DESKTOP_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
-            echo "::error::DESKTOP_USER 不是合法用户名：$DESKTOP_USER"
-            exit 1
-          fi
-          if [ "$DESKTOP_USER" = "root" ]; then
-            echo "::error::DESKTOP_USER 不能是 root（KDE 不允许 root 图形会话）"
-            exit 1
-          fi
-          case "$DESKTOP_PASSWORD" in
-            *:*) echo "::error::DESKTOP_PASSWORD 不能包含冒号"; exit 1 ;;
-          esac
+        if [ "$DESKTOP_VARIANT" = "mobile" ]; then
+          test -n "$KDE_PACKAGES" || { echo "::error::DESKTOP_VARIANT=mobile 时 KDE_PACKAGES 不能为空"; exit 1; }
+        else
+          test -n "$STANDARD_PACKAGES" || { echo "::error::DESKTOP_VARIANT=standard 时 STANDARD_PACKAGES 不能为空"; exit 1; }
         fi
+        if ! [[ "$DESKTOP_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+          echo "::error::DESKTOP_USER 不是合法用户名：$DESKTOP_USER"
+          exit 1
+        fi
+        if [ "$DESKTOP_USER" = "root" ]; then
+          echo "::error::DESKTOP_USER 不能是 root（KDE 不允许 root 图形会话）"
+          exit 1
+        fi
+        case "$DESKTOP_PASSWORD" in
+          *:*) echo "::error::DESKTOP_PASSWORD 不能包含冒号"; exit 1 ;;
+        esac
         echo "rootfs: size=$ROOTFS_SIZE hostname=$ROOTFS_HOSTNAME label=$ROOTFS_LABEL"
-        echo "desktop: install_kde=$INSTALL_KDE user=$DESKTOP_USER"
+        echo "desktop: variant=$DESKTOP_VARIANT user=$DESKTOP_USER"
         echo "extra packages: $EXTRA_PACKAGES"
-        echo "KDE packages: $KDE_PACKAGES"
+        if [ "$DESKTOP_VARIANT" = "mobile" ]; then
+          echo "KDE packages: $KDE_PACKAGES"
+        else
+          echo "standard packages: $STANDARD_PACKAGES"
+        fi
     - name: Free runner disk for Plasma Mobile rootfs
       run: |
         set -euo pipefail
@@ -209,9 +212,9 @@ jobs:
           pacman -S --noconfirm --needed --disable-download-timeout "${pkgs[@]}"
         fi
 
-        # 默认安装 KDE Plasma Mobile；plasma-mobile 提供手机 shell，
-        # Plasma Login Manager 负责登录。
-        if [ "${ROOTFS_INSTALL_KDE:-true}" = "true" ]; then
+        # 桌面二选一：mobile=Plasma Mobile；standard=标准 KDE Plasma。
+        # 两者互斥，不会同时安装。
+        if [ "$ROOTFS_DESKTOP_VARIANT" = "mobile" ]; then
           read -r -a kde_pkgs <<< "$ROOTFS_KDE_PACKAGES"
           pacman -S --noconfirm --needed --disable-download-timeout "${kde_pkgs[@]}"
           # KWin/Wayland 需要 Mesa；即使 KDE_PACKAGES 被精简也显式保证安装。
@@ -225,15 +228,12 @@ jobs:
           else
             echo "WARNING: 找不到 plasmalogin 用户/组，跳过 /var/lib/plasmalogin 创建"
           fi
-        fi
-
-        # 额外安装标准桌面；默认 KDE Plasma，与 Plasma Mobile 共存。
-        # 默认显示管理器仍是 plasmalogin，默认会话仍是 Plasma Mobile。
-        if [ "${ROOTFS_INSTALL_STANDARD:-true}" = "true" ]; then
+        elif [ "$ROOTFS_DESKTOP_VARIANT" = "standard" ]; then
           read -r -a standard_pkgs <<< "$ROOTFS_STANDARD_PACKAGES"
           pacman -S --noconfirm --needed --disable-download-timeout "${standard_pkgs[@]}"
-          # 标准桌面可能带 sddm；移动版默认用 plasmalogin，避免两个 DM 冲突。
-          systemctl disable sddm.service 2>/dev/null || true
+        else
+          echo "::error::未知 DESKTOP_VARIANT：$ROOTFS_DESKTOP_VARIANT"
+          exit 1
         fi
 
         # Plasma Mobile 或额外包若间接拉入固件，再清理一次。
@@ -272,7 +272,7 @@ jobs:
 
         printf 'root:%s\n' "$ROOTFS_PASSWORD" | chpasswd
 
-        if [ "${ROOTFS_INSTALL_KDE:-true}" = "true" ]; then
+        if [ "$ROOTFS_DESKTOP_VARIANT" = "mobile" ] || [ "$ROOTFS_DESKTOP_VARIANT" = "standard" ]; then
           # 图形会话不允许 root 登录，创建一个普通桌面用户。
           if ! id "$ROOTFS_DESKTOP_USER" >/dev/null 2>&1; then
             useradd -m -s /bin/bash "$ROOTFS_DESKTOP_USER"
@@ -309,7 +309,7 @@ jobs:
         done
         systemctl enable serial-getty@ttyS0.service 2>/dev/null || true
 
-        if [ "${ROOTFS_INSTALL_KDE:-true}" = "true" ]; then
+        if [ "$ROOTFS_DESKTOP_VARIANT" = "mobile" ]; then
           # Plasma Login Manager 与 getty@tty1 冲突，桌面环境下不启用文本 getty。
           systemctl disable getty@tty1.service 2>/dev/null || true
           if [ -e /usr/lib/systemd/system/plasmalogin.service ]; then
@@ -321,18 +321,26 @@ jobs:
         PreselectedSession=plasma-mobile.desktop
         PLASMALOGIN_EOF
             chmod 644 /etc/plasmalogin.conf
-          elif [ -e /usr/lib/systemd/system/sddm.service ]; then
+          else
+            echo "::error::Plasma Mobile 已选择但找不到 plasmalogin.service"
+            exit 1
+          fi
+          systemctl set-default graphical.target \
+            || ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target
+        elif [ "$ROOTFS_DESKTOP_VARIANT" = "standard" ]; then
+          # 标准 KDE Plasma 使用 SDDM，不与 Plasma Mobile 共存。
+          systemctl disable getty@tty1.service 2>/dev/null || true
+          if [ -e /usr/lib/systemd/system/sddm.service ]; then
             systemctl enable sddm.service
           else
-            echo "::error::KDE 已安装但找不到 Plasma Login Manager / SDDM"
+            echo "::error::标准 KDE 已选择但找不到 sddm.service"
             exit 1
           fi
           systemctl set-default graphical.target \
             || ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target
         else
-          systemctl enable getty@tty1.service 2>/dev/null || true
-          systemctl set-default multi-user.target \
-            || ln -sf /usr/lib/systemd/system/multi-user.target /etc/systemd/system/default.target
+          echo "::error::未知 DESKTOP_VARIANT：$ROOTFS_DESKTOP_VARIANT"
+          exit 1
         fi
 
         ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
@@ -389,8 +397,9 @@ jobs:
           LANG=C \
           ROOTFS_HOSTNAME="$ROOTFS_HOSTNAME" \
           ROOTFS_PASSWORD="$ROOT_PASSWORD" \
-          ROOTFS_INSTALL_KDE="$INSTALL_KDE" \
+          ROOTFS_DESKTOP_VARIANT="$DESKTOP_VARIANT" \
           ROOTFS_KDE_PACKAGES="$KDE_PACKAGES" \
+          ROOTFS_STANDARD_PACKAGES="$STANDARD_PACKAGES" \
           ROOTFS_DESKTOP_USER="$DESKTOP_USER" \
           ROOTFS_DESKTOP_PASSWORD="${DESKTOP_PASSWORD:-$ROOT_PASSWORD}" \
           ROOTFS_PACKAGES="$EXTRA_PACKAGES" \
@@ -480,7 +489,9 @@ jobs:
         # 缺它或属主不对时 plasmalogin-helper 会 chdir 失败并退出码 3。
         # 这里用数字 UID/GID 校验：runner 自身的 /etc/passwd 没有 plasmalogin，
         # 直接用 stat 的 %U:%G 会显示 UNKNOWN:UNKNOWN，误报属主错误。
-        if [ -e rootfs/usr/lib/systemd/system/plasmalogin.service ]; then
+        if [ "$DESKTOP_VARIANT" = "mobile" ]; then
+          test -e rootfs/usr/lib/systemd/system/plasmalogin.service \
+            || { echo "::error::Plasma Mobile 已选择但缺少 plasmalogin.service"; exit 1; }
           test -d rootfs/var/lib/plasmalogin \
             || { echo "::error::缺少 /var/lib/plasmalogin，plasmalogin greeter 会失败"; exit 1; }
           plasmalogin_uid="$(awk -F: '$1=="plasmalogin"{print $3}' rootfs/etc/passwd)"
@@ -497,7 +508,7 @@ jobs:
             || { echo "::error::/var/lib/plasmalogin 权限不是 750：$plasmalogin_dir_mode"; exit 1; }
         fi
 
-        if [ "$INSTALL_KDE" = "true" ]; then
+        if [ "$DESKTOP_VARIANT" = "mobile" ]; then
           test -x rootfs/usr/bin/plasmalogin \
             || { echo "::error::Plasma Mobile 已启用但缺少 plasmalogin"; exit 1; }
           test -x rootfs/usr/bin/startplasma-wayland \
@@ -523,10 +534,27 @@ jobs:
           sudo grep -q '^%wheel ALL=(ALL:ALL) ALL$' rootfs/etc/sudoers.d/10-wheel \
             || { echo "::error::wheel sudo 配置缺失"; exit 1; }
           echo "Plasma Mobile desktop user: $DESKTOP_USER"
+        elif [ "$DESKTOP_VARIANT" = "standard" ]; then
+          test -x rootfs/usr/bin/startplasma-wayland \
+            || { echo "::error::标准 KDE 缺少 startplasma-wayland 依赖"; exit 1; }
+          test -f rootfs/usr/share/wayland-sessions/plasma.desktop \
+            || { echo "::error::缺少标准 KDE Wayland 会话文件"; exit 1; }
+          test -x rootfs/usr/bin/sddm \
+            || { echo "::error::标准 KDE 已选择但缺少 sddm"; exit 1; }
+          test -L rootfs/etc/systemd/system/display-manager.service \
+            || { echo "::error::display-manager.service 未启用"; exit 1; }
+          readlink rootfs/etc/systemd/system/default.target | grep -q 'graphical.target' \
+            || { echo "::error::默认 systemd target 不是 graphical.target"; exit 1; }
+          grep -q "^${DESKTOP_USER}:" rootfs/etc/passwd \
+            || { echo "::error::桌面用户 ${DESKTOP_USER} 不存在"; exit 1; }
+          test -d "rootfs/home/${DESKTOP_USER}" \
+            || { echo "::error::桌面用户 ${DESKTOP_USER} 的 home 不存在"; exit 1; }
+          sudo grep -q '^%wheel ALL=(ALL:ALL) ALL$' rootfs/etc/sudoers.d/10-wheel \
+            || { echo "::error::wheel sudo 配置缺失"; exit 1; }
+          echo "Standard KDE desktop user: $DESKTOP_USER"
         else
-          echo "Plasma Mobile disabled: checking headless target"
-          readlink rootfs/etc/systemd/system/default.target | grep -q 'multi-user.target' \
-            || { echo "::error::headless rootfs 的默认 target 不是 multi-user.target"; exit 1; }
+          echo "::error::未知 DESKTOP_VARIANT：$DESKTOP_VARIANT"
+          exit 1
         fi
 
         echo "--- /sbin/init ---"
@@ -610,12 +638,12 @@ jobs:
         compression-level: 0
     - name: Write job summary
       run: |
-        if [ "$INSTALL_KDE" = "true" ]; then
+        if [ "$DESKTOP_VARIANT" = "mobile" ]; then
           desktop_desc="KDE Plasma Mobile + Plasma Login Manager + Mesa"
           desktop_account="$DESKTOP_USER"
         else
-          desktop_desc="未安装（headless）"
-          desktop_account="—"
+          desktop_desc="标准 KDE Plasma + SDDM"
+          desktop_account="$DESKTOP_USER"
         fi
         {
           echo "## Arch Linux ARM64 rootfs"
